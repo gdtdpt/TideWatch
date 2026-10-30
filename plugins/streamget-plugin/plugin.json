@@ -1,0 +1,25 @@
+{
+  "name": "streamget",
+  "version": "0.2.0",
+  "protocol": 2,
+  "exec": "{python}",
+  "args": ["{plugin_dir}/main.py"],
+  "env": { "PYTHONPATH": "{plugin_dir}/site-packages" },
+  "modes": ["oneshot", "serve"],
+  "url_patterns": [
+    "live.douyin.com", "v.douyin.com", "www.douyin.com/user",
+    "live.bilibili.com",
+    "bilibili.com/video", "b23.tv"
+  ],
+  "platforms": ["douyin", "bilibili"],
+  "requires": {
+    "runtime": { "kind": "python", "version": ">=3.10" },
+    "optional": [
+      {
+        "kind": "node", "version": ">=18",
+        "reason": "上游签名类平台（haixiu/liveme/migu 等）需要 Node 执行签名 JS；当前已接的抖音/B站不需要",
+        "affects_platforms": []
+      }
+    ]
+  }
+}

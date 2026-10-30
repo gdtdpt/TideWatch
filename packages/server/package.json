@@ -1,0 +1,41 @@
+{
+  "name": "@tidewatch/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "tidewatch": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "tsx watch src/cli.ts serve",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js serve",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.5",
+    "@fastify/rate-limit": "^11.2.1",
+    "@fastify/static": "^10.1.8",
+    "@fastify/websocket": "^11.3.4",
+    "@tidewatch/core": "workspace:*",
+    "@tidewatch/host-adapter": "workspace:*",
+    "@tidewatch/notify": "workspace:*",
+    "@tidewatch/protocol": "workspace:*",
+    "@tidewatch/store": "workspace:*",
+    "commander": "^15.0.0",
+    "fastify": "^5.12.7",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}

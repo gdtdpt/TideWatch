@@ -1,0 +1,260 @@
+#!/usr/bin/env node
+/**
+ * CLI：`serve` 是唯一常驻形态；其余子命令都是控制面客户端。
+ * 退出只有一条管道：HTTP `/api/shutdown` 与 SIGTERM/SIGINT 调同一个 shutdown()。
+ */
+import { networkInterfaces } from 'node:os';
+import { join, resolve } from 'node:path';
+import { Command } from 'commander';
+import { createHostAdapter } from '@tidewatch/host-adapter';
+import { buildApp } from './app.ts';
+import { loadOrCreateToken, SESSION_COOKIE } from './auth.ts';
+import { TidewatchService } from './service.ts';
+
+const VERSION = '0.0.0';
+const here = import.meta.dirname;
+
+function defaultDataRoot(): string {
+  return process.env['TIDEWATCH_DATA_ROOT'] ?? resolve(process.cwd(), 'data');
+}
+
+function lanAddresses(): string[] {
+  const out: string[] = [];
+  for (const list of Object.values(networkInterfaces())) {
+    for (const ni of list ?? []) {
+      if (ni.family === 'IPv4' && !ni.internal) out.push(ni.address);
+    }
+  }
+  return out;
+}
+
+async function login(base: string, dataRoot: string): Promise<string> {
+  const { token } = loadOrCreateToken(dataRoot);
+  const res = await fetch(`${base}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) throw new Error(`登录失败（HTTP ${String(res.status)}）`);
+  const setCookie = res.headers.getSetCookie();
+  const raw = setCookie.find((c) => c.startsWith(`${SESSION_COOKIE}=`)) ?? setCookie[0] ?? '';
+  const pair = raw.split(';')[0] ?? '';
+  if (pair.length === 0) throw new Error('登录未返回会话 cookie');
+  return pair;
+}
+
+async function api(base: string, dataRoot: string, method: string, path: string, body?: unknown): Promise<unknown> {
+  const cookie = await login(base, dataRoot);
+  const res = await fetch(`${base}${path}`, {
+    method,
+    headers: {
+      cookie,
+      'x-tidewatch-client': '1',
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const text = await res.text();
+  let parsed: unknown = text;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    /* 保留原文 */
+  }
+  if (!res.ok) throw new Error(`HTTP ${String(res.status)}: ${text}`);
+  return parsed;
+}
+
+const program = new Command();
+program.name('tidewatch').description('TideWatch daemon — 多平台直播录制服务').version(VERSION);
+
+program
+  .command('serve', { isDefault: true })
+  .description('以常驻服务方式启动（唯一形态）')
+  .option('-p, --port <port>', '监听端口', '8686')
+  .option('-H, --host <host>', '监听地址', '0.0.0.0')
+  .option('-d, --data-root <path>', '数据根目录')
+  .action(async (opts: { port: string; host: string; dataRoot?: string }) => {
+    const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
+    const port = Number(opts.port);
+    const closing = { done: false };
+
+    const host = createHostAdapter({
+      dataRoot,
+      resourceRoot: resolve(here, '../../..'),
+      defaultDownloads: join(dataRoot, 'downloads'),
+      cliPath: resolve(here, 'cli.js'),
+      port,
+    });
+
+    const service = new TidewatchService({
+      dataRoot,
+      resourceRoot: resolve(here, '../../..'),
+      host,
+      version: VERSION,
+      port,
+      logger: {
+        info: (msg, meta) => console.log(`[tidewatch] ${msg}`, meta ?? ''),
+        warn: (msg, meta) => console.warn(`[tidewatch] ${msg}`, meta ?? ''),
+      },
+    });
+
+    async function shutdown(reason: string): Promise<void> {
+      if (closing.done) return;
+      closing.done = true;
+      console.log(`\n[tidewatch] 开始优雅收尾（${reason}）`);
+      try {
+        // onClose → service.stop：等 runner → 超时硬杀 → 恢复扫描兜底
+        await app.close();
+        process.exit(0);
+      } catch (err) {
+        console.error('收尾失败，强制退出：', err);
+        process.exit(1);
+      }
+    }
+
+    const app = await buildApp({
+      dataRoot,
+      version: VERSION,
+      host,
+      service,
+      requestShutdown: (r) => void shutdown(r),
+    });
+
+    if (!service.status.leaseAcquired) {
+      console.error(`引擎租约被占用：${service.status.leaseNote ?? ''}`);
+      await app.close();
+      process.exit(2);
+    }
+
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+
+    await app.listen({ port, host: opts.host });
+
+    const { token } = loadOrCreateToken(dataRoot);
+    console.log(
+      [
+        '',
+        `  TideWatch daemon 已启动  (pid ${String(process.pid)})`,
+        `  数据根     ${dataRoot}`,
+        `  本机访问   http://127.0.0.1:${String(port)}`,
+        ...lanAddresses().map((ip) => `  局域网访问 http://${ip}:${String(port)}`),
+        `  访问 token ${token}`,
+        '',
+      ].join('\n'),
+    );
+  });
+
+program
+  .command('status')
+  .description('查询正在运行的 daemon 状态')
+  .option('-p, --port <port>', '端口', '8686')
+  .action(async (opts: { port: string }) => {
+    try {
+      const res = await fetch(`http://127.0.0.1:${String(opts.port)}/api/health`);
+      const body: unknown = await res.json();
+      console.log(res.ok ? JSON.stringify(body, null, 2) : `HTTP ${String(res.status)}`);
+      process.exit(res.ok ? 0 : 1);
+    } catch {
+      console.error(`未连上 daemon（127.0.0.1:${String(opts.port)}）`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('stop')
+  .description('优雅停止正在运行的 daemon')
+  .option('-p, --port <port>', '端口', '8686')
+  .option('-d, --data-root <path>', '数据根目录')
+  .action(async (opts: { port: string; dataRoot?: string }) => {
+    const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
+    await api(`http://127.0.0.1:${String(opts.port)}`, dataRoot, 'POST', '/api/shutdown');
+    console.log('已请求优雅停止');
+  });
+
+program
+  .command('token')
+  .description('显示访问 token（本机操作）')
+  .option('-d, --data-root <path>', '数据根目录')
+  .action((opts: { dataRoot?: string }) => {
+    const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
+    const { token, created } = loadOrCreateToken(dataRoot);
+    console.log(created ? `已生成新 token（写入 ${join(dataRoot, 'auth-token.txt')}）：` : '当前 token：');
+    console.log(token);
+  });
+
+program
+  .command('add <url>')
+  .description('添加任务（默认开启监控）')
+  .option('-p, --port <port>', '端口', '8686')
+  .option('-d, --data-root <path>', '数据根目录')
+  .option('--no-monitor', '只添加不监控')
+  .action(async (url: string, opts: { port: string; dataRoot?: string; monitor: boolean }) => {
+    const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
+    const result = await api(`http://127.0.0.1:${String(opts.port)}`, dataRoot, 'POST', '/api/tasks', {
+      url,
+      monitor: opts.monitor,
+    });
+    console.log(JSON.stringify(result, null, 2));
+  });
+
+program
+  .command('record <taskId>')
+  .description('手动录这一场；--stop 停止当前场')
+  .option('-p, --port <port>', '端口', '8686')
+  .option('-d, --data-root <path>', '数据根目录')
+  .option('--stop', '停止当前场')
+  .action(async (taskId: string, opts: { port: string; dataRoot?: string; stop?: boolean }) => {
+    const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
+    const result = await api(`http://127.0.0.1:${String(opts.port)}`, dataRoot, 'POST', `/api/tasks/${taskId}/record`, {
+      recording: opts.stop !== true,
+    });
+    console.log(JSON.stringify(result, null, 2));
+  });
+
+program
+  .command('diagnose')
+  .description('导出诊断包到数据根 exports/')
+  .option('-p, --port <port>', '端口', '8686')
+  .option('-d, --data-root <path>', '数据根目录')
+  .action(async (opts: { port: string; dataRoot?: string }) => {
+    const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
+    const result = await api(
+      `http://127.0.0.1:${String(opts.port)}`,
+      dataRoot,
+      'POST',
+      '/api/diagnostics/export',
+    );
+    console.log(JSON.stringify(result, null, 2));
+  });
+
+program
+  .command('service <action>')
+  .description('安装/卸载开机自启（install | uninstall | status）')
+  .option('-d, --data-root <path>', '数据根目录')
+  .option('-p, --port <port>', '端口', '8686')
+  .action(async (action: string, opts: { dataRoot?: string; port: string }) => {
+    const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
+    const host = createHostAdapter({
+      dataRoot,
+      resourceRoot: resolve(here, '../../..'),
+      defaultDownloads: join(dataRoot, 'downloads'),
+      cliPath: resolve(here, 'cli.js'),
+      port: Number(opts.port),
+    });
+    if (action === 'install') {
+      await host.service.install();
+      console.log('已安装开机自启');
+    } else if (action === 'uninstall') {
+      await host.service.uninstall();
+      console.log('已卸载开机自启');
+    } else if (action === 'status') {
+      console.log((await host.service.isInstalled()) ? '已安装' : '未安装');
+    } else {
+      console.error('未知动作：install | uninstall | status');
+      process.exit(1);
+    }
+  });
+
+await program.parseAsync(process.argv);

@@ -1,0 +1,7 @@
+packages:
+  - 'packages/*'
+  - 'tools/*'
+
+# 原生模块需要在安装时执行构建/下载脚本（better-sqlite3、@napi-rs/keyring）
+allowBuilds:
+  esbuild: true

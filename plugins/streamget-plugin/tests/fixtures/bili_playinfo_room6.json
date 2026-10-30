@@ -1,0 +1,523 @@
+{
+ "_comment": "真实 getRoomPlayInfo 响应（2026-10-07，房间 6 在播，未登录）：url_info 里的签名临时地址已换成占位符（会过期，也不该入库）。",
+ "code": 0,
+ "data": {
+  "playurl_info": {
+   "playurl": {
+    "stream": [
+     {
+      "protocol_name": "http_stream",
+      "format": [
+       {
+        "format_name": "flv",
+        "codec": [
+         {
+          "codec_name": "avc",
+          "current_qn": 250,
+          "accept_qn": [
+           10000,
+           400,
+           250,
+           150
+          ],
+          "base_url": "/live/room6/seg.m4s",
+          "url_info": [
+           {
+            "host": "https://cdn.example.invalid",
+            "extra": ""
+           }
+          ],
+          "hdr_qn": null,
+          "dolby_type": 0,
+          "attr_name": "",
+          "hdr_type": 0,
+          "drm": false,
+          "drm_key_systems": null,
+          "video_codecs": {
+           "base": "avc1.64001f",
+           "ext": [
+            ""
+           ]
+          },
+          "audio_codecs": {
+           "base": "mp4a.40.2",
+           "ext": [
+            ""
+           ]
+          },
+          "session": "live_50329118_9516950",
+          "is_pushing": true,
+          "stream_resource_req": null,
+          "video_color_info": {
+           "colorspace": "bt709",
+           "metadata_types": [
+            "none"
+           ]
+          },
+          "media_info": {
+           "height": 720,
+           "width": 1280,
+           "realtime_avg_bw": 174388
+          }
+         },
+         {
+          "codec_name": "hevc",
+          "current_qn": 250,
+          "accept_qn": [
+           10000,
+           400,
+           250
+          ],
+          "base_url": "/live/room6/seg.m4s",
+          "url_info": [
+           {
+            "host": "https://cdn.example.invalid",
+            "extra": ""
+           }
+          ],
+          "hdr_qn": null,
+          "dolby_type": 0,
+          "attr_name": "",
+          "hdr_type": 0,
+          "drm": false,
+          "drm_key_systems": null,
+          "video_codecs": {
+           "base": "hvc1.1.6.L93",
+           "ext": [
+            ""
+           ]
+          },
+          "audio_codecs": {
+           "base": "mp4a.40.2",
+           "ext": [
+            ""
+           ]
+          },
+          "session": "live_50329118_9516950",
+          "is_pushing": true,
+          "stream_resource_req": null,
+          "video_color_info": {
+           "colorspace": "bt709",
+           "metadata_types": [
+            "none"
+           ]
+          },
+          "media_info": {
+           "height": 720,
+           "width": 1280,
+           "realtime_avg_bw": 112255
+          }
+         },
+         {
+          "codec_name": "hevc",
+          "current_qn": 10000,
+          "accept_qn": [
+           10000
+          ],
+          "base_url": "/live/room6/seg.m4s",
+          "url_info": [
+           {
+            "host": "https://cdn.example.invalid",
+            "extra": ""
+           }
+          ],
+          "hdr_qn": null,
+          "dolby_type": 0,
+          "attr_name": "",
+          "hdr_type": 1,
+          "drm": false,
+          "drm_key_systems": null,
+          "video_codecs": {
+           "base": "hvc1.2.4.L123",
+           "ext": [
+            ""
+           ]
+          },
+          "audio_codecs": {
+           "base": "mp4a.40.2",
+           "ext": [
+            ""
+           ]
+          },
+          "session": "live_50329118_9516950",
+          "is_pushing": true,
+          "stream_resource_req": null,
+          "video_color_info": {
+           "colorspace": "bt2020",
+           "eotf": 1,
+           "metadata_types": [
+            "smpte_st2086",
+            "none"
+           ]
+          },
+          "media_info": {
+           "height": 1080,
+           "width": 1920,
+           "realtime_avg_bw": 351975
+          }
+         }
+        ],
+        "master_url": "https://api.example.invalid/play-gateway/master/url"
+       }
+      ]
+     },
+     {
+      "protocol_name": "http_hls",
+      "format": [
+       {
+        "format_name": "ts",
+        "codec": [
+         {
+          "codec_name": "avc",
+          "current_qn": 250,
+          "accept_qn": [
+           10000,
+           400,
+           250,
+           150
+          ],
+          "base_url": "/live/room6/seg.m4s",
+          "url_info": [
+           {
+            "host": "https://cdn.example.invalid",
+            "extra": ""
+           }
+          ],
+          "hdr_qn": null,
+          "dolby_type": 0,
+          "attr_name": "",
+          "hdr_type": 0,
+          "drm": false,
+          "drm_key_systems": null,
+          "video_codecs": {
+           "base": "avc1.64001f",
+           "ext": [
+            ""
+           ]
+          },
+          "audio_codecs": {
+           "base": "mp4a.40.2",
+           "ext": [
+            ""
+           ]
+          },
+          "session": "live_50329118_9516950",
+          "is_pushing": true,
+          "stream_resource_req": null,
+          "video_color_info": {
+           "colorspace": "bt709",
+           "metadata_types": [
+            "none"
+           ]
+          },
+          "media_info": {
+           "height": 720,
+           "width": 1280,
+           "realtime_avg_bw": 174388
+          }
+         },
+         {
+          "codec_name": "hevc",
+          "current_qn": 250,
+          "accept_qn": [
+           10000,
+           400,
+           250
+          ],
+          "base_url": "/live/room6/seg.m4s",
+          "url_info": [
+           {
+            "host": "https://cdn.example.invalid",
+            "extra": ""
+           }
+          ],
+          "hdr_qn": null,
+          "dolby_type": 0,
+          "attr_name": "",
+          "hdr_type": 0,
+          "drm": false,
+          "drm_key_systems": null,
+          "video_codecs": {
+           "base": "hvc1.1.6.L93",
+           "ext": [
+            ""
+           ]
+          },
+          "audio_codecs": {
+           "base": "mp4a.40.2",
+           "ext": [
+            ""
+           ]
+          },
+          "session": "live_50329118_9516950",
+          "is_pushing": true,
+          "stream_resource_req": null,
+          "video_color_info": {
+           "colorspace": "bt709",
+           "metadata_types": [
+            "none"
+           ]
+          },
+          "media_info": {
+           "height": 720,
+           "width": 1280,
+           "realtime_avg_bw": 112255
+          }
+         },
+         {
+          "codec_name": "hevc",
+          "current_qn": 10000,
+          "accept_qn": [
+           10000
+          ],
+          "base_url": "/live/room6/seg.m4s",
+          "url_info": [
+           {
+            "host": "https://cdn.example.invalid",
+            "extra": ""
+           }
+          ],
+          "hdr_qn": null,
+          "dolby_type": 0,
+          "attr_name": "",
+          "hdr_type": 1,
+          "drm": false,
+          "drm_key_systems": null,
+          "video_codecs": {
+           "base": "hvc1.2.4.L123",
+           "ext": [
+            ""
+           ]
+          },
+          "audio_codecs": {
+           "base": "mp4a.40.2",
+           "ext": [
+            ""
+           ]
+          },
+          "session": "live_50329118_9516950",
+          "is_pushing": true,
+          "stream_resource_req": null,
+          "video_color_info": {
+           "colorspace": "bt2020",
+           "eotf": 1,
+           "metadata_types": [
+            "smpte_st2086",
+            "none"
+           ]
+          },
+          "media_info": {
+           "height": 1080,
+           "width": 1920,
+           "realtime_avg_bw": 351975
+          }
+         }
+        ],
+        "master_url": "https://api.example.invalid/play-gateway/master/url"
+       },
+       {
+        "format_name": "fmp4",
+        "codec": [
+         {
+          "codec_name": "avc",
+          "current_qn": 250,
+          "accept_qn": [
+           10000,
+           400,
+           250,
+           150
+          ],
+          "base_url": "/live/room6/seg.m4s",
+          "url_info": [
+           {
+            "host": "https://cdn.example.invalid",
+            "extra": ""
+           }
+          ],
+          "hdr_qn": null,
+          "dolby_type": 0,
+          "attr_name": "",
+          "hdr_type": 0,
+          "drm": false,
+          "drm_key_systems": null,
+          "video_codecs": {
+           "base": "avc1.64001f",
+           "ext": [
+            ""
+           ]
+          },
+          "audio_codecs": {
+           "base": "mp4a.40.2",
+           "ext": [
+            ""
+           ]
+          },
+          "session": "live_50329118_9516950",
+          "is_pushing": true,
+          "stream_resource_req": null,
+          "video_color_info": {
+           "colorspace": "bt709",
+           "metadata_types": [
+            "none"
+           ]
+          },
+          "media_info": {
+           "height": 720,
+           "width": 1280,
+           "realtime_avg_bw": 174388
+          }
+         },
+         {
+          "codec_name": "hevc",
+          "current_qn": 250,
+          "accept_qn": [
+           10000,
+           400,
+           250
+          ],
+          "base_url": "/live/room6/seg.m4s",
+          "url_info": [
+           {
+            "host": "https://cdn.example.invalid",
+            "extra": ""
+           }
+          ],
+          "hdr_qn": null,
+          "dolby_type": 0,
+          "attr_name": "",
+          "hdr_type": 0,
+          "drm": false,
+          "drm_key_systems": null,
+          "video_codecs": {
+           "base": "hvc1.1.6.L93",
+           "ext": [
+            ""
+           ]
+          },
+          "audio_codecs": {
+           "base": "mp4a.40.2",
+           "ext": [
+            ""
+           ]
+          },
+          "session": "live_50329118_9516950",
+          "is_pushing": true,
+          "stream_resource_req": null,
+          "video_color_info": {
+           "colorspace": "bt709",
+           "metadata_types": [
+            "none"
+           ]
+          },
+          "media_info": {
+           "height": 720,
+           "width": 1280,
+           "realtime_avg_bw": 112255
+          }
+         },
+         {
+          "codec_name": "hevc",
+          "current_qn": 10000,
+          "accept_qn": [
+           10000
+          ],
+          "base_url": "/live/room6/seg.m4s",
+          "url_info": [
+           {
+            "host": "https://cdn.example.invalid",
+            "extra": ""
+           }
+          ],
+          "hdr_qn": null,
+          "dolby_type": 0,
+          "attr_name": "",
+          "hdr_type": 1,
+          "drm": false,
+          "drm_key_systems": null,
+          "video_codecs": {
+           "base": "hvc1.2.4.L123",
+           "ext": [
+            ""
+           ]
+          },
+          "audio_codecs": {
+           "base": "mp4a.40.2",
+           "ext": [
+            ""
+           ]
+          },
+          "session": "live_50329118_9516950",
+          "is_pushing": true,
+          "stream_resource_req": null,
+          "video_color_info": {
+           "colorspace": "bt2020",
+           "eotf": 1,
+           "metadata_types": [
+            "smpte_st2086",
+            "none"
+           ]
+          },
+          "media_info": {
+           "height": 1080,
+           "width": 1920,
+           "realtime_avg_bw": 351975
+          }
+         },
+         {
+          "codec_name": "av1",
+          "current_qn": 250,
+          "accept_qn": [
+           10000,
+           400,
+           250
+          ],
+          "base_url": "/live/room6/seg.m4s",
+          "url_info": [
+           {
+            "host": "https://cdn.example.invalid",
+            "extra": ""
+           }
+          ],
+          "hdr_qn": null,
+          "dolby_type": 0,
+          "attr_name": "",
+          "hdr_type": 0,
+          "drm": false,
+          "drm_key_systems": null,
+          "video_codecs": {
+           "base": "av01.0.05M.08",
+           "ext": [
+            ""
+           ]
+          },
+          "audio_codecs": {
+           "base": "mp4a.40.2",
+           "ext": [
+            ""
+           ]
+          },
+          "session": "live_50329118_9516950",
+          "is_pushing": true,
+          "stream_resource_req": null,
+          "video_color_info": {
+           "colorspace": "bt709",
+           "metadata_types": [
+            "none"
+           ]
+          },
+          "media_info": {
+           "height": 720,
+           "width": 1280,
+           "realtime_avg_bw": 98034
+          }
+         }
+        ],
+        "master_url": "https://api.example.invalid/play-gateway/master/url"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ }
+}
