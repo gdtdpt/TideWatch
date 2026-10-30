@@ -11,7 +11,6 @@ import {
   runRecovery,
   type CapturePort,
   type EngineFs,
-  type ProbePort,
   type RecoverySummary,
 } from '@tidewatch/core';
 import type { HostAdapter } from '@tidewatch/host-adapter';
@@ -40,10 +39,23 @@ export interface ServiceStatus {
   leaseAcquired: boolean;
   leaseNote: string | null;
   recovery: RecoverySummary | null;
-  ffmpeg: string;
-  ffprobe: string;
+  ffmpeg: BinaryRef;
+  ffprobe: BinaryRef;
   python: string;
   cookieBackend: string;
+}
+
+/** 二进制从哪来的：环境变量覆盖 / 随包 vendor / 系统 PATH 回退 */
+export type BinarySource = 'env' | 'vendor' | 'path';
+
+export interface BinaryRef {
+  command: string;
+  source: BinarySource;
+}
+
+export interface BinaryStatus extends BinaryRef {
+  ok: boolean;
+  version: string | null;
 }
 
 function envPath(name: string, fallback: string): string {
@@ -51,11 +63,41 @@ function envPath(name: string, fallback: string): string {
   return v !== undefined && v.length > 0 ? v : fallback;
 }
 
+/**
+ * 三级解析：显式 env > vendor（随包）> PATH。
+ * PATH 只作回退 —— ffmpeg 版本会改变 stderr 措辞，而错误分类靠关键词表，
+ * 用户自装的版本会让同一份流归到不同错误码，所以"来源"必须能看见。
+ */
+function pickBinary(resourceRoot: string, envName: string, name: string): BinaryRef {
+  const fromEnv = process.env[envName];
+  if (fromEnv !== undefined && fromEnv.length > 0) return { command: fromEnv, source: 'env' };
+  const bundled = join(resourceRoot, 'vendor', 'ffmpeg', 'bin', name);
+  if (existsSync(bundled)) return { command: bundled, source: 'vendor' };
+  return { command: name, source: 'path' };
+}
+
+/**
+ * 静态 ffmpeg（openssl 版）经常不带 CA 搜索路径，结果是**对任何 https 都报**
+ * `certificate verify failed` —— 表现为"直播流一开就 EOF 重连"，看不出是证书问题。
+ * 系统 CA bundle 存在时通过 SSL_CERT_FILE 注入（OpenSSL 认这个变量），
+ * 用户自己设了就不动。
+ */
+function tlsEnv(): Readonly<Record<string, string>> | undefined {
+  if (process.env['SSL_CERT_FILE'] !== undefined) return undefined;
+  const candidates = [
+    '/etc/ssl/cert.pem', // macOS / Alpine
+    '/etc/ssl/certs/ca-certificates.crt', // Debian / Ubuntu
+    '/etc/pki/tls/certs/ca-bundle.crt', // RHEL / Fedora
+  ];
+  const found = candidates.find((p) => existsSync(p));
+  return found === undefined ? undefined : { SSL_CERT_FILE: found };
+}
+
 export class TidewatchService {
   readonly store: Store;
   readonly fs: EngineFs;
   readonly capture: CapturePort;
-  readonly probe: ProbePort;
+  readonly probe: FfprobeProbe;
   readonly manager: PluginManager;
   readonly resolver: PluginResolver;
   readonly engine: Engine;
@@ -73,21 +115,11 @@ export class TidewatchService {
     // 目录不存在时 statfs 查不出可用空间，健康页会误报"未知"
     mkdirSync(this.outputRoot, { recursive: true });
 
-    const ffmpeg = envPath(
-      'TIDEWATCH_FFMPEG',
-      existsSync(join(opts.resourceRoot, 'vendor', 'ffmpeg', 'bin', 'ffmpeg'))
-        ? join(opts.resourceRoot, 'vendor', 'ffmpeg', 'bin', 'ffmpeg')
-        : 'ffmpeg',
-    );
-    const ffprobe = envPath(
-      'TIDEWATCH_FFPROBE',
-      existsSync(join(opts.resourceRoot, 'vendor', 'ffmpeg', 'bin', 'ffprobe'))
-        ? join(opts.resourceRoot, 'vendor', 'ffmpeg', 'bin', 'ffprobe')
-        : 'ffprobe',
-    );
+    const ffmpeg = pickBinary(opts.resourceRoot, 'TIDEWATCH_FFMPEG', 'ffmpeg');
+    const ffprobe = pickBinary(opts.resourceRoot, 'TIDEWATCH_FFPROBE', 'ffprobe');
 
-    this.capture = new FfmpegCapture(opts.host.processes, ffmpeg);
-    this.probe = new FfprobeProbe(opts.host.processes, ffprobe);
+    this.capture = new FfmpegCapture(opts.host.processes, ffmpeg.command, tlsEnv());
+    this.probe = new FfprobeProbe(opts.host.processes, ffprobe.command);
 
     this.manager = new PluginManager({
       dataRoot: opts.dataRoot,
@@ -175,6 +207,29 @@ export class TidewatchService {
       ffprobe,
       python: this.manager.pythonPath,
       cookieBackend: opts.host.credentials.describeBackend(),
+    };
+  }
+
+  /**
+   * 当前生效的 ffmpeg/ffprobe：路径、来源、是否可用、版本。
+   * `ffmpeg -version` 有 60s 缓存，健康页可以安全地反复问（装完不用重启就自愈）。
+   */
+  async binaries(): Promise<{ ffmpeg: BinaryStatus; ffprobe: BinaryStatus }> {
+    const [ffmpegInfo, ffprobeInfo] = await Promise.all([
+      this.capture.preflight?.() ?? Promise.resolve(undefined),
+      this.probe.describe(),
+    ]);
+    return {
+      ffmpeg: {
+        ...this.#status.ffmpeg,
+        ok: ffmpegInfo?.ok ?? false,
+        version: ffmpegInfo?.version ?? null,
+      },
+      ffprobe: {
+        ...this.#status.ffprobe,
+        ok: ffprobeInfo.ok,
+        version: ffprobeInfo.version,
+      },
     };
   }
 

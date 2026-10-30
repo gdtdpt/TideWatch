@@ -14,5 +14,8 @@ data/
 # 插件运行时依赖（21MB，可重建：见 requirements.lock 头注释）
 plugins/streamget-plugin/site-packages/
 
+# 层 B 平台相关二进制（ffmpeg / python），由 tools/fetch-ffmpeg.sh 或打包脚本生成
+vendor/
+
 # 本地工具状态（WorkBuddy 会话记忆等），不入库
 .workbuddy/

@@ -1,5 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { api, fmtBytes, type CookieInfo, type Health, type PluginInfo, type Settings as SettingsShape } from '../api.ts';
+import {
+  api,
+  fmtBytes,
+  type BinaryStatus,
+  type CookieInfo,
+  type Health,
+  type PluginInfo,
+  type Settings as SettingsShape,
+} from '../api.ts';
 import { Badge, Button, Card, Empty, ErrorText, Field, Input, PageHeader, Select, Toggle } from '../components.tsx';
 import { useAsync } from '../hooks.ts';
 
@@ -8,7 +16,14 @@ type Dict = Record<string, unknown>;
 interface SettingsResponse {
   settings: SettingsShape;
   paths: { dataRoot: string; outputRoot: string; resourceRoot: string };
-  runtime: { ffmpeg: string; ffprobe: string; python: string; cookieBackend: string; leaseAcquired: boolean; leaseNote: string | null };
+  runtime: {
+    ffmpeg: { command: string; source: string };
+    ffprobe: { command: string; source: string };
+    python: string;
+    cookieBackend: string;
+    leaseAcquired: boolean;
+    leaseNote: string | null;
+  };
 }
 
 const channel = (notify: Dict, name: string): Dict => {
@@ -319,13 +334,18 @@ export function Settings({ tick }: { tick: number }): ReactNode {
         <dl className="grid gap-2 text-xs sm:grid-cols-2">
           <Row k="数据根" v={loaded.data?.paths.dataRoot ?? '—'} />
           <Row k="录制目录" v={loaded.data?.paths.outputRoot ?? '—'} />
-          <Row k="ffmpeg" v={loaded.data?.runtime.ffmpeg ?? '—'} />
-          <Row k="ffprobe" v={loaded.data?.runtime.ffprobe ?? '—'} />
+          <BinaryRow name="ffmpeg" bin={health.data?.binaries.ffmpeg} />
+          <BinaryRow name="ffprobe" bin={health.data?.binaries.ffprobe} />
           <Row k="python" v={loaded.data?.runtime.python ?? '—'} />
           <Row k="Cookie 存储" v={loaded.data?.runtime.cookieBackend ?? '—'} />
           <Row k="磁盘可用" v={fmtBytes(health.data?.freeBytes ?? null)} />
           <Row k="引擎租约" v={loaded.data?.runtime.leaseAcquired === true ? '持有' : '未持有'} />
         </dl>
+        {health.data?.binaries.ffprobe.ok === false && (
+          <p className="mt-2 text-xs text-amber-300">
+            缺 ffprobe 不影响录制，但分段指纹取不到 —— 收尾分组会退化成 unknown。
+          </p>
+        )}
         {loaded.data?.runtime.leaseNote !== null && loaded.data?.runtime.leaseNote !== undefined && (
           <p className="mt-2 text-xs text-amber-300">{loaded.data.runtime.leaseNote}</p>
         )}
@@ -349,6 +369,47 @@ function Row({ k, v }: { k: string; v: string }): ReactNode {
     <div className="flex gap-2">
       <dt className="w-24 shrink-0 text-neutral-500">{k}</dt>
       <dd className="min-w-0 truncate text-neutral-300">{v}</dd>
+    </div>
+  );
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  env: '环境变量',
+  vendor: '随包 vendor',
+  path: '系统 PATH',
+};
+
+/**
+ * ffmpeg/ffprobe 一行：版本 + 来源 + 路径。
+ * 来源必须显示 —— 走系统 PATH 意味着版本不受控，而版本会改变 stderr 措辞，
+ * 错误分类靠关键词表，同一份流可能因此归到不同错误码。
+ */
+function BinaryRow({ name, bin }: { name: string; bin: BinaryStatus | undefined }): ReactNode {
+  return (
+    <div className="flex gap-2 sm:col-span-2">
+      <dt className="w-24 shrink-0 text-neutral-500">{name}</dt>
+      <dd className="min-w-0">
+        {bin === undefined ? (
+          <span className="text-neutral-500">探测中…</span>
+        ) : !bin.ok ? (
+          <span className="flex flex-wrap items-center gap-2">
+            <Badge tone="error">缺失</Badge>
+            <span className="text-[11px] text-amber-300">
+              跑 tools/fetch-ffmpeg.sh 装到 vendor/，或用 TIDEWATCH_FFMPEG 指定绝对路径
+            </span>
+          </span>
+        ) : (
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="text-neutral-300">{bin.version ?? '版本未知'}</span>
+            <Badge tone={bin.source === 'vendor' ? 'ok' : 'warn'}>
+              {SOURCE_LABEL[bin.source] ?? bin.source}
+            </Badge>
+            <span className="min-w-0 truncate text-[11px] text-neutral-500" title={bin.command}>
+              {bin.command}
+            </span>
+          </span>
+        )}
+      </dd>
     </div>
   );
 }

@@ -5,14 +5,48 @@
 import type { CaptureHandle, CapturePort, CapturePreflight, CaptureSpec } from '@tidewatch/core';
 import type { ProcessSupervisor } from '@tidewatch/host-adapter';
 
+/**
+ * `ffmpeg -version` 首行形如 `ffmpeg version 9.0.2 Copyright (c) ...`。
+ * 自编译版会写成 `N-118658-g1a2b3c`，照样原样取；
+ * 但有些第三方构建把自家站点拼进版本号（`9.0.2-https://www.martin-riedl.de`），
+ * 那种尾巴只会在 UI 里碍事，切掉。
+ */
+function parseVersion(output: string): string | undefined {
+  const m = /(?:ffmpeg|ffprobe) version (\S+)/i.exec(output);
+  if (m?.[1] === undefined) return undefined;
+  return m[1].replace(/-https?:\/\/.*$/i, '');
+}
+
+export interface BinaryInfo {
+  ok: boolean;
+  version: string | null;
+}
+
+/** 探一次二进制是否可用并取版本；ffmpeg 与 ffprobe 共用（两者的 `-version` 形状一致） */
+export async function describeBinary(
+  supervisor: ProcessSupervisor,
+  command: string,
+  timeoutMs = 5_000,
+): Promise<BinaryInfo> {
+  const run = await runCommand(supervisor, command, ['-version'], timeoutMs);
+  const version = parseVersion(run.stdout + run.stderr);
+  return { ok: run.code === 0, version: version ?? null };
+}
+
 export class FfmpegCapture implements CapturePort {
   readonly #supervisor: ProcessSupervisor;
   readonly #command: string;
+  readonly #env: Readonly<Record<string, string>> | undefined;
   #checked: { at: number; result: CapturePreflight } | null = null;
 
-  constructor(supervisor: ProcessSupervisor, command: string) {
+  constructor(
+    supervisor: ProcessSupervisor,
+    command: string,
+    env?: Readonly<Record<string, string>> | undefined,
+  ) {
     this.#supervisor = supervisor;
     this.#command = command;
+    this.#env = env;
   }
 
   get command(): string {
@@ -22,18 +56,21 @@ export class FfmpegCapture implements CapturePort {
   /**
    * `ffmpeg -version` 探一次就够（60s 缓存）。
    * 缺件时的提示要能直接指导用户：给路径、给环境变量名，不说"未知错误"。
+   * 顺便把版本号带出去 —— 版本会改变 stderr 措辞，错误分类依赖关键词表。
    */
   async preflight(): Promise<CapturePreflight> {
     const now = Date.now();
     if (this.#checked !== null && now - this.#checked.at < 60_000) return this.#checked.result;
-    const run = await runCommand(this.#supervisor, this.#command, ['-version'], 5_000);
-    const result: CapturePreflight =
-      run.code === 0
-        ? { ok: true }
-        : {
-            ok: false,
-            detail: `找不到可用的 ffmpeg（${this.#command}）：请安装 ffmpeg，或用 TIDEWATCH_FFMPEG 指定绝对路径`,
-          };
+    const info = await describeBinary(this.#supervisor, this.#command);
+    const result: CapturePreflight = info.ok
+      ? { ok: true, ...(info.version === null ? {} : { version: info.version }) }
+      : {
+          ok: false,
+          detail:
+            `找不到可用的 ffmpeg（${this.#command}）：` +
+            '跑 tools/fetch-ffmpeg.sh 装到 vendor/，或安装系统 ffmpeg，' +
+            '或用 TIDEWATCH_FFMPEG 指定绝对路径',
+        };
     this.#checked = { at: now, result };
     return result;
   }
@@ -42,6 +79,7 @@ export class FfmpegCapture implements CapturePort {
     const proc = this.#supervisor.spawn({
       command: this.#command,
       args: spec.args,
+      ...(this.#env === undefined ? {} : { env: this.#env }),
       onLine: (stream, line) => {
         if (stream === 'stderr') spec.onStderrLine?.(line);
         else spec.onStdoutLine?.(line);

@@ -168,6 +168,17 @@ tidewatch-<ver>-<os>-<arch>/
   不影响其余设计。
 - **插件运行时依赖**：`plugins/streamget-plugin/site-packages/`（21MB，`requirements.lock` 逐包钉死）
   不入库、不打进产物，由打包脚本按目标平台现场装或烘进镜像；重建命令写在 `requirements.lock` 头注释里。
+- **ffmpeg 二进制怎么来**：解析链见 `service.ts` 的 `pickBinary()` ——
+  `TIDEWATCH_FFMPEG`（显式）> `vendor/ffmpeg/bin/`（随包）> `PATH`（回退，UI 会标"系统 PATH"）。
+  开发机用 `pnpm fetch:ffmpeg`（`tools/fetch-ffmpeg.sh`）拉静态构建，装完把版本记进
+  `vendor/ffmpeg/VERSION`；`vendor/` 不入库（层 B 平台相关件，180MB）。
+  为什么不像 `ffmpeg-static` 那样靠 npm postinstall：pnpm 12 要 `allowBuilds` 白名单、
+  离线机器与 CI 缓存都会卡，许可责任也转到我们身上。
+- **静态 ffmpeg 的 TLS 坑**：openssl 静态构建常常不带 CA 搜索路径，直接对任何 https 报
+  `certificate verify failed`；在录制上表现为"一开流就 `stream_eof` 重连"，完全看不出是证书问题。
+  `service.ts` 的 `tlsEnv()` 在 `SSL_CERT_FILE` 未设置时按平台找系统 CA bundle
+  （`/etc/ssl/cert.pem` / `ca-certificates.crt` / `ca-bundle.crt`）注入给 ffmpeg 子进程。
+  真机验证：修前 0 字节，修后 154s/47MB 正常出流。
 
 ### 8.2 三种交付形态与它们各自消掉的差异
 

@@ -107,7 +107,17 @@ cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest disc
 
 每条都是"跑一次、看一眼"的动作，交付前必须做完并记录结果：
 
-- [ ] **B站真机短录**：`tidewatch serve` → 加一个真实直播间 → 开录 2 分钟 → 产物可播、段边界连续、manifest 无 gap
+- [x] **B站真机短录**：`tidewatch serve` → 加一个真实直播间 → 开录 2 分钟 → 产物可播、段边界连续、manifest 无 gap
+      ✅ **2026-10-29 通过**（ffmpeg 9.0.2 vendor / 房间 5050）
+      - 链路：`POST /api/tasks` 触发真实 Python 插件 probe（主播 `EdmundDZhang`、标题正确）→ resolve → 起 ffmpeg
+      - 录制 154.4s / 47.5MB 单段 TS，`integrity=ok`，layout `h264-1280x720-yuv420p+aac-48000-2`（720p60）
+      - 停止后 merge 出 44.6MB mp4，`ffprobe` 复核：h264 + aac、1280×720@60、154.25s，`end_reason=manual`
+      - 产物落盘后才 rename（先 `.tmp-`）与"源 TS 保留"两条硬约束均成立
+      - **发现并修掉的问题**：静态 ffmpeg 不带 CA 搜索路径 → 任何 https 都 `certificate verify failed`，
+        表现为"一开就 `stream_eof` 重连"，看不出是证书问题。已在 `service.ts` 注入 `SSL_CERT_FILE`
+        （见 `tlsEnv()`），修前 0 字节、修后立即出流
+      - 待跟进：该房间匿名只协商到 `qn=250 超清`（720p），非原画；`quality_options` 只报 `['超清']`，
+        属 M3 画质协商遗留项
 - [ ] **抖音真机短录**：同上（验证请求头注入与 `-headers` 顺序）
 - [ ] **断网重连**：录制中拔网线 30s 再插回 → 同会话续录、时间轴出现缺口斜纹、`recording.gap` 有记录
 - [ ] **强杀恢复**：录制中 `kill -9` → 重启 → 会话标 interrupted、正在写的段被 recovered、可合并

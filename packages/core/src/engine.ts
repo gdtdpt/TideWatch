@@ -64,6 +64,12 @@ export interface CapturePreflight {
   ok: boolean;
   /** 给人看的一句话：缺什么、期望放在哪 */
   detail?: string;
+  /**
+   * 生效的二进制版本（`ffmpeg -version` 的第一行里那段，例如 `9.0.2`）。
+   * 版本会改变 stderr 的措辞（8.1.3 起 `Frame changed from size` 就没了），
+   * 而错误分类靠关键词表 —— 所以"用户装了哪个版本"必须能被看到。
+   */
+  version?: string;
 }
 
 export interface ProbePort {

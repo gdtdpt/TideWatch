@@ -4,11 +4,12 @@
  */
 import { fingerprintFromProbe, probeArgs, type Fingerprint, type ProbePort } from '@tidewatch/core';
 import type { ProcessSupervisor } from '@tidewatch/host-adapter';
-import { runCommand } from './capture.ts';
+import { describeBinary, runCommand, type BinaryInfo } from './capture.ts';
 
 export class FfprobeProbe implements ProbePort {
   readonly #supervisor: ProcessSupervisor;
   readonly #command: string;
+  #described: { at: number; info: BinaryInfo } | null = null;
 
   constructor(supervisor: ProcessSupervisor, command: string) {
     this.#supervisor = supervisor;
@@ -17,6 +18,18 @@ export class FfprobeProbe implements ProbePort {
 
   get command(): string {
     return this.#command;
+  }
+
+  /**
+   * 缺 ffprobe 时录制照旧（分组退化为 unknown），所以这里不做阻断，
+   * 只把"有没有 / 哪个版本"报到健康页 —— 否则用户永远不知道分组为什么全是 unknown。
+   */
+  async describe(): Promise<BinaryInfo> {
+    const now = Date.now();
+    if (this.#described !== null && now - this.#described.at < 60_000) return this.#described.info;
+    const info = await describeBinary(this.#supervisor, this.#command);
+    this.#described = { at: now, info };
+    return info;
   }
 
   async probe(file: string): Promise<Fingerprint | null> {

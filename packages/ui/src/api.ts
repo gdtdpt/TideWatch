@@ -155,6 +155,16 @@ export interface NotificationRow {
   readAt: string | null;
 }
 
+/** 二进制来源：环境变量覆盖 / 随包 vendor / 系统 PATH 回退 */
+export type BinarySource = 'env' | 'vendor' | 'path';
+
+export interface BinaryStatus {
+  command: string;
+  source: BinarySource;
+  ok: boolean;
+  version: string | null;
+}
+
 export interface Health {
   ok: boolean;
   version: string;
@@ -165,6 +175,7 @@ export interface Health {
   lease: { acquired: boolean; note: string | null };
   paths: { dataRoot: string; outputRoot: string };
   freeBytes: number | null;
+  binaries: { ffmpeg: BinaryStatus; ffprobe: BinaryStatus };
 }
 
 export interface Settings {

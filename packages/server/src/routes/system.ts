@@ -32,6 +32,9 @@ export function registerSystemRoutes(app: FastifyInstance, service: TidewatchSer
     lease: { acquired: service.status.leaseAcquired, note: service.status.leaseNote },
     paths: { dataRoot: service.opts.dataRoot, outputRoot: service.outputRoot },
     freeBytes: await service.fs.freeBytes(service.outputRoot),
+    // 生效的 ffmpeg/ffprobe：缺件、版本漂移、来源（env/vendor/path）都要能被看见，
+    // 否则"为什么分组全是 unknown""为什么同一份流归到别的错误码"没法解释
+    binaries: await service.binaries(),
   }));
 
   app.get('/api/plugins', async () => ({
