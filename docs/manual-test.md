@@ -47,10 +47,10 @@ node packages/server/dist/cli.js serve --port 8686 --data-root ./data
 
 ```
   TideWatch daemon 已启动  (pid 56314)
-  数据根     /Users/richard/Develop/TideCapSev/data
+  数据根     /Users/you/TideCapSev/data
   本机访问   http://127.0.0.1:8686
   局域网访问 http://10.0.0.20:8686
-  访问 token 9bb2f9d5…
+  访问 token a1b2c3d4…
 ```
 
 | 参数 / 变量 | 作用 |

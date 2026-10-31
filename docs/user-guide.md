@@ -37,7 +37,7 @@ TideWatch 是一个**常驻的直播录制服务**：你给它一个直播间地
 
 一次典型的日常：
 
-1. 打开页面 → 在「总览」粘贴 `https://live.bilibili.com/6192987`；
+1. 打开页面 → 在「总览」粘贴 `https://live.bilibili.com/123456`；
 2. 之后你什么都不用做——开播自动录，下播自动出 MP4；
 3. 想回看就点「最近一场」→ 页面里直接播放；
 4. 出问题（缺依赖 / 需要登录 / 断流太久）会在「通知」里告诉你。
@@ -56,6 +56,7 @@ TideWatch 是一个**常驻的直播录制服务**：你给它一个直播间地
 |---|---|---|
 | Node.js | **≥ 24**（推荐 26.x） | 用了内置 `node:sqlite`，低版本直接跑不起来 |
 | pnpm | 12.x | `packageManager` 已锁定 |
+| Python | **≥ 3.10**（3.12 / 3.13 最佳） | 仅抓抖音 / B 站需要；`.m3u8` 直链不依赖它。详见 §2.4 |
 | 磁盘 | 按录制量留余量 | 一场 720p60 大约 **0.3–0.6 GB/小时** |
 | 网络 | 能访问直播平台与 CDN | 公司代理环境下要摘掉 `HTTP_PROXY`（见 §16） |
 
@@ -99,21 +100,82 @@ pnpm fetch:ffmpeg      # 下载 ffmpeg + ffprobe 到 vendor/ffmpeg/bin
 > （`/etc/ssl/cert.pem`、`/etc/ssl/certs/ca-certificates.crt`、`/etc/pki/tls/certs/ca-bundle.crt`）。
 > 少了这步，对任何 https 源都会 `certificate verify failed`，而录制侧只表现为"无限重连"。
 
-### 2.4 插件（可选但大多数情况需要）
+### 2.4 Python 运行时与插件依赖（抓抖音 / B 站必读）
 
-抖音 / B 站的抓流靠 `plugins/streamget-plugin`（Python）。它需要：
+抖音 / B 站的抓流靠 `plugins/streamget-plugin`（Python 插件，走 stdio JSON 协议）。
+`.m3u8` / `.flv` 直链不经过插件，也就**不需要 Python**。
 
-- Python **≥ 3.10**（优先 `vendor/python/bin/python3`，否则 PATH 上的 `python3`）；
-- 依赖已随 `site-packages/` 一起分发；若缺失，按 `requirements.lock` 重装。
+#### 版本要求
 
-装好启动后，「设置 → 插件」应看到：
+| 项 | 要求 |
+|---|---|
+| 解释器 | **Python ≥ 3.10**（3.12 / 3.13 都验证过；3.9 及以下不可用） |
+| 依赖 | 由 `plugins/streamget-plugin/requirements.lock` 钉死版本，需自行安装到 `site-packages/` |
+
+**为什么卡 3.10**：插件依赖的 `streamget` 用了 PEP 604 写法（`dict | None`），这在 3.9 下是运行时错误，
+导入阶段就抛 `TypeError`，进程还没读到请求就退出了。界面上看到的症状是任务报错
+**「插件未响应就退出」**——不是插件坏了，是解释器太旧。
+
+自查一行：
+
+```bash
+python3 -V          # 需要 3.10 及以上，macOS 自带的 /usr/bin/python3 是 3.9.x，不够
+```
+
+#### 装一个够新的解释器
+
+程序按这个顺序找 Python，**先命中先用**：
+
+1. 环境变量 `TIDEWATCH_PYTHON`（绝对路径，最高优先级，**推荐**）；
+2. `vendor/python/bin/python3`（打包分发形态才有，源码仓库里没有）；
+3. PATH 上的 `python3`（最容易踩到系统自带的 3.9）。
+
+所以最省事的做法是装一个独立解释器并显式指定：
+
+```bash
+# 没有 Homebrew 时，直接装 python.org 官方包（3.12 / 3.13 皆可），装完在 /usr/local/bin/
+TIDEWATCH_PYTHON=/usr/local/bin/python3.12 node packages/server/dist/cli.js serve
+```
+
+用 Homebrew / pyenv / uv / 虚拟环境装的同理，把 `TIDEWATCH_PYTHON` 指过去即可。
+想长期生效就写进 shell 的 profile，或（macOS 服务化时）写进 launchd 的 `EnvironmentVariables`。
+
+#### 安装插件依赖
+
+`site-packages/` 有 21 MB，**不入库**（`.gitignore` 排除），clone 下来必须装一次：
+
+```bash
+/usr/local/bin/python3.12 -m pip install \
+  -r plugins/streamget-plugin/requirements.lock \
+  --target plugins/streamget-plugin/site-packages
+```
+
+锁定文件里的每个包都钉了版本（含 `streamget` 的传递依赖），重建不会漂移。
+`site-packages` 里的 `.so` 都是 `abi3` 稳定 ABI，换 3.10～3.13 之间的小版本不需要重装。
+
+#### 验证
+
+```bash
+# ① 直接问插件一句话，看它是否回协议 JSON
+cd plugins/streamget-plugin
+echo '{"id":"1","action":"probe","url":"https://live.bilibili.com/1"}' \
+  | PYTHONPATH="$PWD/site-packages" /usr/local/bin/python3.12 main.py
+# 期望：{"id":"1","ok":true,"platform":"bilibili","platform_name":"B站","kind":"live"}
+```
+
+```bash
+# ② 看 daemon 认到了哪个解释器：设置 → 运行环境 → python
+#    这一行就是程序实际拿去启动插件的路径，和你在 shell 里 which python3 的结果可能不同
+```
+
+启动后「设置 → 插件」应看到：
 
 ```
 streamget  v0.2.0  协议 2  douyin  bilibili
 /…/plugins/streamget-plugin
 ```
 
-看不到或标红「不可启动」，先看 §16 的插件相关条目。
+看不到、标红「不可启动」，或任务报「插件未响应就退出」，先看 §16 的插件相关条目。
 
 ---
 
@@ -132,7 +194,7 @@ node packages/server/dist/cli.js serve
   数据根     /Users/you/TideCapSev/data
   本机访问   http://127.0.0.1:8686
   局域网访问 http://10.0.0.20:8686
-  访问 token 9bb2f9d5…
+  访问 token a1b2c3d4…
 ```
 
 常用参数：
@@ -412,7 +474,7 @@ daemon 启动时会做一次**恢复扫描**：读每个会话目录里的 manif
 
 ```
 <录制目录>/<主播>/20261031-093433_new_a2d80a46/
-    央视频_20261031_093433.mp4         合并产物
+    夜航星_20261031_093433.mp4         合并产物
     a2d80a46…_part001.ts …             源分段（编号三位，按顺序）
     session.manifest.json              这一场的事实源（分段顺序、指纹、事件）
 ```
@@ -673,6 +735,9 @@ WebSocket —— 但那条路要求网关支持 `Upgrade`，未必更省事。
 | 页面能开，但接口全 401 | token 来自另一个数据根 | 看启动横幅的「数据根」，`cat <它>/auth-token.txt`；或统一用 `-d` |
 | 粘 token 一直 401，日志里能登录成功 | 你在运行中删过 token 文件 | 重启 daemon（CLI 现在会提示这一点） |
 | 任务卡在 `needs_dep` | ffmpeg / python 找不到 | 「设置 → 运行环境」看来源；`pnpm fetch:ffmpeg`；或 `TIDEWATCH_FFMPEG` |
+| 任务报 **「插件未响应就退出」** | Python 版本太低（多半是 macOS 自带的 3.9） | `python3 -V` 确认；装 3.12/3.13，用 `TIDEWATCH_PYTHON=/usr/local/bin/python3.12` 重启 daemon（§2.4） |
+| 插件起来了但报 `No module named streamget` | `site-packages/` 没装（它不在仓库里） | 按 §2.4 用 `pip install -r requirements.lock --target …` 装一次 |
+| 「设置 → 插件」显示的是别的 python | PATH 上还有个 `python3` 抢在前面 | 显式指定 `TIDEWATCH_PYTHON`；「设置 → 运行环境 → python」显示的是实际用的那个 |
 | 一直 `reconnecting`，detail 是 `stream_eof` | 证书 / 请求头 / 流地址过期 | 手工验：`./vendor/ffmpeg/bin/ffmpeg -v error -t 5 -i <url> -f null -`；`certificate verify failed` → 查 `SSL_CERT_FILE` |
 | 一直 `重连中`，但录制其实在跑 | 反代掐了长连接 | 直连 8686 试；正常应显示「实时连接 SSE」 |
 | 页面数据不自动更新，侧栏显示 `SSE` 但点不动 | 反代缓冲了流式响应 | 地址加 `?transport=ws` 应急；根治见 §15：给 `/api/events/stream` 关 `proxy_buffering` |

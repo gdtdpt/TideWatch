@@ -11,6 +11,10 @@ data/
 .env
 .env.local
 
+# Python 字节码缓存（插件被宿主拉起时生成）
+__pycache__/
+*.pyc
+
 # 插件运行时依赖（21MB，可重建：见 requirements.lock 头注释）
 plugins/streamget-plugin/site-packages/
 
