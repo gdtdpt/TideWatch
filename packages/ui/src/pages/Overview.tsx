@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import {
   api,
+  ApiError,
   END_REASON_LABEL,
   fmtBytes,
   fmtDuration,
@@ -29,6 +30,8 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
   );
   const [url, setUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [highlight, setHighlight] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<Task | null>(null);
   const now = useNow();
@@ -36,14 +39,30 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
   const add = async (): Promise<void> => {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      await api.post('/api/tasks', { url: url.trim(), monitor: true });
+      // 插件探测是外网请求，给个上限：卡住时要说"等超时了"，不能一直转圈
+      const res = await api.post<{ task: Task }>('/api/tasks', { url: url.trim(), monitor: true }, 60_000);
       setUrl('');
-      tasks.reload();
+      setHighlight(res.task.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof ApiError && err.status === 409) {
+        // 不是失败：任务早就在了（可能上一次"看起来失败"其实已入库）
+        setUrl('');
+        setNotice('这个地址已经在任务里了，已在下面标出来');
+        const detail = err.detail;
+        setHighlight(
+          typeof detail === 'object' && detail !== null && 'taskId' in detail
+            ? String((detail as { taskId: unknown }).taskId)
+            : null,
+        );
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setBusy(false);
+      // 成功失败都刷新：上一次请求可能"客户端失败、服务端已建成"
+      tasks.reload();
     }
   };
 
@@ -96,6 +115,7 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
           </Button>
         </div>
         {error !== null && <div className="mt-2"><ErrorText>{error}</ErrorText></div>}
+        {notice !== null && <p className="mt-2 text-xs text-sky-300">{notice}</p>}
       </Card>
 
       {tasks.data === null && tasks.loading && <Empty>正在加载任务…</Empty>}
@@ -109,14 +129,18 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
           const recording = runtime.state === 'recording' || runtime.state === 'reconnecting';
           const elapsed = recording ? (now - new Date(runtime.updatedAt).getTime()) / 1000 : 0;
           return (
-            <Card key={task.id}>
+            <Card
+              key={task.id}
+              className={task.id === highlight ? 'ring-1 ring-sky-500/70' : 'transition-shadow'}
+            >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="truncate text-base font-medium">{task.streamerName ?? '未命名直播间'}</h3>
                     <Badge tone={stateTone(runtime.state)}>{STATE_LABEL[runtime.state] ?? runtime.state}</Badge>
                     {task.recordRequested && <Badge tone="info">已请求录制</Badge>}
-                    {task.skipCurrentLive && <Badge>本场已跳过</Badge>}
+                    {/* state=snoozed 的徽标已经写着"本场已跳过"，别重复两遍 */}
+                    {task.skipCurrentLive && runtime.state !== 'snoozed' && <Badge>本场已跳过</Badge>}
                   </div>
                   <p className="mt-0.5 truncate text-xs text-neutral-500">{task.title ?? task.url}</p>
                   {runtime.detail !== null && <p className="mt-1 truncate text-xs text-neutral-400">{runtime.detail}</p>}

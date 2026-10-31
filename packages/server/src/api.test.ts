@@ -86,6 +86,19 @@ async function makeApp(): Promise<Ctx> {
 }
 
 describe('任务控制面', () => {
+  it('重复地址：409 带回已有任务 id（界面据此定位，而不是只报"已存在"）', async () => {
+    const c = await makeApp();
+    const url = 'https://live.bilibili.com/6192987';
+    const task = c.service.store.addTask({ url, platform: 'bilibili', monitorEnabled: true });
+
+    const res = await c.send<{ error: string; message: string; taskId: string }>('POST', '/api/tasks', { url });
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toBe('duplicate');
+    expect(res.body.taskId).toBe(task.id);
+    // 去重发生在探测之前：不该因为重复而多发一次插件调用（也没有真的联网）
+    expect(c.service.store.listTasks()).toHaveLength(1);
+  });
+
   it('三个标志互不覆盖：复选框=自动 / 按钮=这一场 / 徽标=状态', async () => {
     const c = await makeApp();
     const task = c.service.store.addTask({ url: 'https://live.douyin.com/1', platform: 'douyin', monitorEnabled: true });

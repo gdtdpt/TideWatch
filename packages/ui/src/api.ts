@@ -5,9 +5,12 @@
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** 服务端返回体：429 的 retryAfter、409 的 taskId 都在这里，别丢了 */
+  readonly detail: unknown;
+  constructor(status: number, message: string, detail?: unknown) {
     super(message);
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -16,16 +19,27 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void {
   onUnauthorized = fn;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers: {
-      ...(method === 'GET' || method === 'HEAD' ? {} : { 'X-TideWatch-Client': '1' }),
-      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
+async function request<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method,
+      credentials: 'same-origin',
+      headers: {
+        ...(method === 'GET' || method === 'HEAD' ? {} : { 'X-TideWatch-Client': '1' }),
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(timeoutMs === undefined ? {} : { signal: AbortSignal.timeout(timeoutMs) }),
+    });
+  } catch (err) {
+    // 调用方给了超时却等到超时 = 服务在忙（例如插件探测卡住），要说清楚，
+    // 而不是把浏览器那句 "Failed to fetch" 直接甩给用户。
+    if (timeoutMs !== undefined && err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new ApiError(0, `等待超时（${String(Math.round(timeoutMs / 1000))} 秒没有响应）——任务可能已创建，已刷新列表`);
+    }
+    throw new ApiError(0, `请求没发出去或连接中断：${err instanceof Error ? err.message : String(err)}`);
+  }
   const text = await res.text();
   let parsed: unknown;
   try {
@@ -42,14 +56,15 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       typeof parsed === 'object' && parsed !== null && 'message' in parsed
         ? String((parsed as { message: unknown }).message)
         : `HTTP ${String(res.status)}`;
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, parsed);
   }
   return parsed as T;
 }
 
 export const api = {
   get: <T>(path: string): Promise<T> => request<T>('GET', path),
-  post: <T>(path: string, body?: unknown): Promise<T> => request<T>('POST', path, body),
+  post: <T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> =>
+    request<T>('POST', path, body, timeoutMs),
   put: <T>(path: string, body?: unknown): Promise<T> => request<T>('PUT', path, body),
   patch: <T>(path: string, body?: unknown): Promise<T> => request<T>('PATCH', path, body),
   del: <T>(path: string): Promise<T> => request<T>('DELETE', path),

@@ -287,6 +287,8 @@ cd plugins/streamget-plugin && PYTHONPATH="$PWD/site-packages:$PWD" python3 -m u
 | 启动直接退出，日志"引擎租约被占用" | 同一个 data-root 起了两个 daemon | `pgrep -fl 'cli.js serve'`，先停一个（退出码 2 就是这个） |
 | 端口占用 EADDRINUSE | 上一个没退干净 | `lsof -i :8686` 后 kill，或换 `--port` |
 | 停止录制没反应 | body 字段写错 | 必须是 `{"recording":false}`；`{"on":false}` 会被当成默认 true |
+| 添加后提示失败，再点一次却说"已存在" | 第一次的**请求**失败了，但任务已经入库（响应没回到浏览器） | 列表会自动刷新并高亮那张卡；直接用它就行，不用再加一次 |
+| 添加时一直转"解析中…" | 插件探测卡住 | 60 秒会自己超时并给出提示；同时看 `GET /api/plugins` 的 `error` |
 | 删任务后历史记录也没了 | 既有 schema 行为：删任务级联删会话索引 | **磁盘视频不删**；要留历史就只关监控、别删任务 |
 
 排障要证据时直接导出诊断包（设置页按钮，或 `POST /api/diagnostics/export`），

@@ -43,10 +43,17 @@ export function registerTaskRoutes(app: FastifyInstance, service: TidewatchServi
     if (!/^https?:\/\//i.test(url)) {
       return reply.code(400).send({ error: 'bad-url', message: '请填写 http(s) 地址' });
     }
-    if (service.store.getTaskByUrl(url) !== undefined) {
-      return reply.code(409).send({ error: 'duplicate', message: '这个地址已经在任务里了' });
+    const existing = service.store.getTaskByUrl(url);
+    if (existing !== undefined) {
+      // 带上 id：界面据此"定位到已有任务"，而不是把用户堵在一句"已存在"上
+      return reply
+        .code(409)
+        .send({ error: 'duplicate', message: '这个地址已经在任务里了', taskId: existing.id });
     }
+    const probedAt = Date.now();
     const probe = await service.resolver.probeUrl(url);
+    const probeMs = Date.now() - probedAt;
+    if (probeMs > 3_000) req.log.warn({ url, probeMs }, '插件探测偏慢（添加任务的人工等待）');
     if (!probe.ok) {
       return reply.code(400).send({ error: 'unsupported', message: probe.message ?? '不支持的地址' });
     }
