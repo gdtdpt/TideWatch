@@ -122,7 +122,7 @@ export function Settings({ tick }: { tick: number }): ReactNode {
       {error !== null && <ErrorText>{error}</ErrorText>}
 
       <Card title="录制默认值">
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="轮询间隔（秒）" hint="5..3600，重启生效">
             <Input
               type="number"
@@ -229,7 +229,7 @@ export function Settings({ tick }: { tick: number }): ReactNode {
             onToggle={(v) => setChannel('smtp', { enabled: v })}
             onTest={() => void test('smtp')}
           >
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="Host">
                 <Input value={sval(smtp, 'host')} onChange={(e) => setChannel('smtp', { host: e.target.value })} />
               </Field>
@@ -331,7 +331,9 @@ export function Settings({ tick }: { tick: number }): ReactNode {
       />
 
       <Card title="运行环境">
-        <dl className="grid gap-2 text-xs sm:grid-cols-2">
+        {/* 必须显式 grid-cols-1：不写列模板时单列是 auto 轨道，宽度取内容的
+            max-content，长路径会把整页撑出横向滚动条；grid-cols-1 是 minmax(0,1fr) */}
+        <dl className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
           <Row k="数据根" v={loaded.data?.paths.dataRoot ?? '—'} />
           <Row k="录制目录" v={loaded.data?.paths.outputRoot ?? '—'} />
           <BinaryRow name="ffmpeg" bin={health.data?.binaries.ffmpeg} />
@@ -366,9 +368,11 @@ export function Settings({ tick }: { tick: number }): ReactNode {
 
 function Row({ k, v }: { k: string; v: string }): ReactNode {
   return (
-    <div className="flex gap-2">
+    <div className="flex min-w-0 gap-2">
       <dt className="w-24 shrink-0 text-neutral-500">{k}</dt>
-      <dd className="min-w-0 truncate text-neutral-300">{v}</dd>
+      <dd className="min-w-0 flex-1 truncate text-neutral-300" title={v}>
+        {v}
+      </dd>
     </div>
   );
 }
@@ -386,9 +390,9 @@ const SOURCE_LABEL: Record<string, string> = {
  */
 function BinaryRow({ name, bin }: { name: string; bin: BinaryStatus | undefined }): ReactNode {
   return (
-    <div className="flex gap-2 sm:col-span-2">
+    <div className="flex min-w-0 gap-2 sm:col-span-2">
       <dt className="w-24 shrink-0 text-neutral-500">{name}</dt>
-      <dd className="min-w-0">
+      <dd className="min-w-0 flex-1">
         {bin === undefined ? (
           <span className="text-neutral-500">探测中…</span>
         ) : !bin.ok ? (
@@ -399,12 +403,12 @@ function BinaryRow({ name, bin }: { name: string; bin: BinaryStatus | undefined 
             </span>
           </span>
         ) : (
-          <span className="flex flex-wrap items-center gap-2">
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="text-neutral-300">{bin.version ?? '版本未知'}</span>
             <Badge tone={bin.source === 'vendor' ? 'ok' : 'warn'}>
               {SOURCE_LABEL[bin.source] ?? bin.source}
             </Badge>
-            <span className="min-w-0 truncate text-[11px] text-neutral-500" title={bin.command}>
+            <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-500" title={bin.command}>
               {bin.command}
             </span>
           </span>
@@ -478,8 +482,8 @@ function CookieCard({
       <ul className="mt-2 space-y-1 text-sm">
         {cookies.length === 0 && <li className="text-neutral-500">还没有配置</li>}
         {cookies.map((c) => (
-          <li key={c.platform} className="flex items-center justify-between gap-2">
-            <span>
+          <li key={c.platform} className="flex min-w-0 items-center justify-between gap-2">
+            <span className="min-w-0">
               <span className="font-medium">{c.platform}</span>
               <span className="ml-2 text-xs text-neutral-500">{c.hint}</span>
               {!c.encrypted && <Badge tone="warn">未加密</Badge>}

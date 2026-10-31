@@ -36,9 +36,9 @@ export function Card({
   return (
     <section className={`rounded-2xl border border-neutral-800 bg-neutral-900/60 p-4 ${className}`}>
       {(title !== undefined || actions !== undefined) && (
-        <header className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-sm font-medium text-neutral-300">{title}</h2>
-          <div className="flex items-center gap-2">{actions}</div>
+        <header className="mb-3 flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <h2 className="min-w-0 truncate text-sm font-medium text-neutral-300">{title}</h2>
+          <div className="flex min-w-0 items-center gap-2">{actions}</div>
         </header>
       )}
       {children}
@@ -165,12 +165,12 @@ export function PageHeader({
   actions?: ReactNode;
 }): ReactNode {
   return (
-    <header className="mb-4 flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+    <header className="mb-4 flex min-w-0 flex-wrap items-end justify-between gap-3">
+      <div className="min-w-0">
+        <h1 className="truncate text-xl font-semibold tracking-tight">{title}</h1>
         {subtitle !== undefined && <p className="mt-0.5 text-sm text-neutral-500">{subtitle}</p>}
       </div>
-      <div className="flex items-center gap-2">{actions}</div>
+      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">{actions}</div>
     </header>
   );
 }

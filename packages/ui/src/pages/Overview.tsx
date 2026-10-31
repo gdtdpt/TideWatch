@@ -87,7 +87,7 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
         subtitle={`${String(tasks.data?.tasks.length ?? 0)} 个任务 · 今天 ${String(todays.length)} 场`}
       />
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="服务" value={health.data?.version ?? '—'} hint={health.data?.platform ?? ''} />
         <Stat
           label="引擎"
@@ -123,7 +123,7 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
         <Empty>还没有任务。填一个直播间地址，开播后会自动录制。</Empty>
       )}
 
-      <div className="grid gap-3 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {(tasks.data?.tasks ?? []).map((task) => {
           const runtime = task.runtime;
           const recording = runtime.state === 'recording' || runtime.state === 'reconnecting';

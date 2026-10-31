@@ -299,12 +299,14 @@ export function SessionDetail({ id, tick, back }: { id: string; tick: number; ba
         {events.data === null ? (
           <Empty>加载中…</Empty>
         ) : (
-          <ul className="max-h-72 space-y-1 overflow-auto text-[11px]">
+          <ul className="max-h-72 space-y-1 overflow-y-auto overflow-x-hidden text-[11px]">
             {events.data.events.map((e) => (
-              <li key={e.id} className="flex gap-2 text-neutral-400">
+              <li key={e.id} className="flex min-w-0 gap-2 text-neutral-400">
                 <span className="shrink-0 text-neutral-600">{fmtTime(e.ts)}</span>
                 <span className="shrink-0 text-sky-300">{e.kind}</span>
-                <span className="truncate text-neutral-500">{JSON.stringify(e.payload)}</span>
+                {/* payload 是一整段 JSON，没有断行机会：必须显式 min-w-0，否则它按
+                    内容宽度撑开 flex 行，整页横向溢出 */}
+                <span className="min-w-0 flex-1 truncate text-neutral-500">{JSON.stringify(e.payload)}</span>
               </li>
             ))}
           </ul>

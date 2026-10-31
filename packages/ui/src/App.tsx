@@ -106,15 +106,18 @@ export function App(): ReactNode {
         </div>
       </aside>
 
-      <div className="flex min-h-screen flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-3 lg:px-6">
-          <div className="lg:hidden">
+      {/* min-w-0 必须有：flex 子项默认 min-width:auto，等于内容最小宽度。
+          会话详情里事件日志的 JSON 是一整段不可断行的长串，会把这一列撑到
+          max-w-6xl（1152px），lg 下整页就出现横向滚动条。 */}
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
+        <header className="flex items-center justify-between gap-3 border-b border-neutral-800 px-4 py-3 lg:px-6">
+          <div className="min-w-0 lg:hidden">
             <p className="text-base font-semibold">TideWatch</p>
             <p className="text-[11px] text-neutral-500">{connected ? '实时连接' : '重连中…'}</p>
           </div>
           <div className="hidden text-xs text-neutral-500 lg:block">浏览器即客户端 · 局域网随时可看</div>
           <button
-            className="relative rounded-lg border border-neutral-800 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800/60"
+            className="relative shrink-0 rounded-lg border border-neutral-800 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800/60"
             onClick={() => setBell(true)}
           >
             通知
