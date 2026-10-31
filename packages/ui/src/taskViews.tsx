@@ -8,7 +8,6 @@ import {
   api,
   ApiError,
   END_REASON_LABEL,
-  fmtDuration,
   fmtTime,
   STATE_LABEL,
   type Task,
@@ -17,6 +16,16 @@ import { Badge, Button, Card, ErrorText, Field, Input, Modal, Select, Toggle } f
 import { useNow } from './hooks.ts';
 
 export type Tone = 'ok' | 'warn' | 'error' | 'info' | 'neutral';
+
+/** 卡片里的"已录"用紧凑格式（30:32 / 1:05:12），比"30 分 32 秒"省一半宽度 */
+function fmtElapsed(seconds: number): string {
+  const t = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return h > 0 ? `${String(h)}:${pad(m)}:${pad(s)}` : `${String(m)}:${pad(s)}`;
+}
 
 export function stateTone(state: string): Tone {
   if (state === 'recording') return 'ok';
@@ -120,11 +129,13 @@ export function TaskRow({
   onChanged,
   onEdit,
   onOpenSession,
+  highlight = false,
 }: {
   task: Task;
   onChanged: () => void;
   onEdit: (task: Task) => void;
   onOpenSession: (sessionId: string) => void;
+  highlight?: boolean;
 }): ReactNode {
   const now = useNow();
   const [error, setError] = useState<string | null>(null);
@@ -147,72 +158,84 @@ export function TaskRow({
     }
   };
 
-  return (
-    <li className="py-2.5">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <Badge tone={stateTone(runtime.state)}>{STATE_LABEL[runtime.state] ?? runtime.state}</Badge>
-            <span className="truncate text-sm font-medium">{task.streamerName ?? '未命名直播间'}</span>
-            {task.recordRequested && !recording && <Badge tone="info">已请求录制</Badge>}
-            {/* state=snoozed 的徽标已经写着"本场已跳过"，别重复两遍 */}
-            {task.skipCurrentLive && runtime.state !== 'snoozed' && <Badge>本场已跳过</Badge>}
-            {/* state=idle 的徽标已经写着"未监控"，别重复两遍 */}
-            {!task.monitorEnabled && runtime.state !== 'idle' && <Badge tone="warn">未监控</Badge>}
-          </div>
-          <p className="mt-0.5 truncate text-xs text-neutral-500">{task.title ?? task.url}</p>
-          {runtime.detail !== null && <p className="mt-0.5 truncate text-xs text-neutral-400">{runtime.detail}</p>}
-          <p className="mt-0.5 truncate text-[11px] text-neutral-600">
-            {task.latestSession !== null ? (
-              <>
-                <button
-                  className="hover:text-sky-300"
-                  onClick={() => onOpenSession(task.latestSession?.id ?? '')}
-                  title="打开最近一场"
-                >
-                  上一场 {fmtTime(task.latestSession.startedAt)} ·{' '}
-                  {END_REASON_LABEL[task.latestSession.endReason ?? ''] ?? '进行中'}
-                </button>
-                {' · '}
-              </>
-            ) : (
-              '还没有录制记录 · '
-            )}
-            画质 {task.quality ?? '默认'} · 分段 {fmtDuration(task.segmentTimeS)}
-            {recording && elapsed > 0 && ` · 已录 ${fmtDuration(elapsed)}`}
-          </p>
-        </div>
+  /**
+   * 卡片只留"要不要管它"必须看到的：状态、是谁、在播什么、一条落点信息。
+   * 画质/分段这类可改的配置留在设置弹窗里 —— 任务多时一屏能看十来个。
+   */
+  const marks: string[] = [];
+  if (!task.monitorEnabled && runtime.state !== 'idle') marks.push('未监控');
+  if (task.recordRequested && !recording) marks.push('下轮将录');
+  // 插件的 detail 常常自带画质（"1080p60 · 12.4 Mbps"），别在同一行重复一遍
+  if (task.quality !== null && !(runtime.detail ?? '').includes(task.quality)) marks.push(task.quality);
 
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-          <span className="flex items-center gap-1 text-xs text-neutral-400">
-            监控
-            <Toggle
-              checked={task.monitorEnabled}
-              label="监控开关"
-              disabled={busy}
-              onChange={(next) => void act(() => api.post(`/api/tasks/${task.id}/monitor`, { enabled: next }))}
-            />
+  const latest = task.latestSession;
+
+  return (
+    <li
+      className={`rounded-xl border p-2 transition ${
+        highlight ? 'border-sky-500 ring-1 ring-sky-500/60' : 'border-neutral-800 bg-neutral-900/40'
+      }`}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <Badge tone={stateTone(runtime.state)}>{STATE_LABEL[runtime.state] ?? runtime.state}</Badge>
+          <span className="truncate text-sm font-medium" title={task.streamerName ?? task.url}>
+            {task.streamerName ?? '未命名直播间'}
           </span>
-          <Button
-            variant={recording ? 'danger' : 'subtle'}
-            className="px-2 py-1 text-xs"
-            disabled={busy}
-            onClick={() => void act(() => api.post(`/api/tasks/${task.id}/record`, { recording: !recording }))}
-          >
-            {recording ? '停止录制' : '开始录制'}
-          </Button>
-          <Button
-            variant="ghost"
-            className="px-2 py-1 text-xs"
-            disabled={busy}
-            onClick={() => void act(() => api.post(`/api/tasks/${task.id}/check`))}
-          >
-            检查
-          </Button>
-          <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => onEdit(task)}>
-            设置
-          </Button>
+          {recording && elapsed > 0 && (
+            <span className="shrink-0 text-[10px] tabular-nums text-emerald-400" title="本场已录">
+              {fmtElapsed(elapsed)}
+            </span>
+          )}
         </div>
+        <Toggle
+          size="sm"
+          checked={task.monitorEnabled}
+          label="监控开关"
+          disabled={busy}
+          onChange={(next) => void act(() => api.post(`/api/tasks/${task.id}/monitor`, { enabled: next }))}
+        />
+      </div>
+
+      <p className="mt-1 truncate text-xs text-neutral-500" title={task.title ?? task.url}>
+        {task.title ?? task.url}
+      </p>
+
+      <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px]">
+        <span className={`truncate ${runtime.detail !== null ? 'text-neutral-400' : 'text-neutral-600'}`}>
+          {runtime.detail !== null ? (
+            runtime.detail
+          ) : latest !== null ? (
+            <button className="hover:text-sky-300" onClick={() => onOpenSession(latest.id)} title="打开最近一场">
+              上一场 {fmtTime(latest.startedAt)} · {END_REASON_LABEL[latest.endReason ?? ''] ?? '进行中'}
+            </button>
+          ) : (
+            '还没录过'
+          )}
+        </span>
+        {marks.length > 0 && <span className="shrink-0 text-neutral-600">· {marks.join(' · ')}</span>}
+      </div>
+
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <Button
+          variant={recording ? 'danger' : 'subtle'}
+          className="px-2 py-0.5 text-xs"
+          disabled={busy}
+          onClick={() => void act(() => api.post(`/api/tasks/${task.id}/record`, { recording: !recording }))}
+        >
+          {recording ? '停止录制' : '开始录制'}
+        </Button>
+        <Button
+          variant="ghost"
+          className="px-2 py-0.5 text-xs"
+          disabled={busy}
+          onClick={() => void act(() => api.post(`/api/tasks/${task.id}/check`))}
+        >
+          检查
+        </Button>
+        <Button variant="ghost" className="ml-auto px-2 py-0.5 text-xs" onClick={() => onEdit(task)}>
+          设置
+        </Button>
       </div>
       {error !== null && (
         <div className="mt-1">
@@ -228,14 +251,17 @@ export function TaskList({
   onChanged,
   onEdit,
   onOpenSession,
+  highlightId = null,
 }: {
   tasks: readonly Task[];
   onChanged: () => void;
   onEdit: (task: Task) => void;
   onOpenSession: (sessionId: string) => void;
+  highlightId?: string | null;
 }): ReactNode {
   return (
-    <ul className="divide-y divide-neutral-800">
+    // 列宽由 index.css 的 .task-grid 决定（1 / 2 / 3 列，1100px 起三列）
+    <ul className="task-grid">
       {tasks.map((task) => (
         <TaskRow
           key={task.id}
@@ -243,6 +269,7 @@ export function TaskList({
           onChanged={onChanged}
           onEdit={onEdit}
           onOpenSession={onOpenSession}
+          highlight={task.id === highlightId}
         />
       ))}
     </ul>

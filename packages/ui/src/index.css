@@ -11,3 +11,27 @@ body {
   background: #0b0d10;
   color: #e6e8eb;
 }
+
+/*
+ * 任务卡网格。写成普通 CSS 而不是 sm:/min-[1100px]: 这类变体，是因为
+ * 两个断点都是单类选择器、优先级相同，谁生效取决于 Tailwind 输出顺序 ——
+ * 实测 min-[1100px]:grid-cols-3 会被 sm:grid-cols-2 覆盖掉，一直停在两列。
+ * 这里顺序由文件自上而下确定，没有歧义。
+ */
+.task-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+@media (min-width: 640px) {
+  .task-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1080px) {
+  .task-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}

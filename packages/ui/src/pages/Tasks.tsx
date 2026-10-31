@@ -1,7 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { api, type Task } from '../api.ts';
-import { Card, Empty, Input, PageHeader } from '../components.tsx';
-import { useAsync } from '../hooks.ts';
+import { Empty, Input, PageHeader } from '../components.tsx';import { useAsync } from '../hooks.ts';
 import {
   AddTaskCard,
   TaskEditor,
@@ -135,25 +134,21 @@ export function Tasks({ tick, navigate }: { tick: number; navigate: (path: strin
       )}
 
       {groups.map((group) => (
-        <Card
-          key={group.tier}
-          title={
-            <span className="flex items-center gap-2">
-              {TIER_LABEL[group.tier]}
-              <span className="text-xs font-normal text-neutral-500">{group.rows.length}</span>
-            </span>
-          }
-          className={group.rows.some((t) => t.id === highlight) ? 'ring-1 ring-sky-500/70' : ''}
-        >
+        <section key={group.tier} className="space-y-2">
+          <h2 className="flex items-center gap-2 px-1 text-xs font-medium text-neutral-400">
+            {TIER_LABEL[group.tier]}
+            <span className="text-neutral-600">{group.rows.length}</span>
+          </h2>
           <TaskList
             tasks={group.rows}
+            highlightId={highlight}
             onChanged={reload}
             onEdit={setEditing}
             onOpenSession={(id) => {
               if (id.length > 0) navigate(`session/${id}`);
             }}
           />
-        </Card>
+        </section>
       ))}
 
       {all.length > 0 && shown.length > 0 && shown.length < all.length && (

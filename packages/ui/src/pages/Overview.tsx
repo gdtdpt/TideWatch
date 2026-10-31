@@ -91,6 +91,7 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
         {preview.length > 0 && (
           <TaskList
             tasks={preview}
+            highlightId={highlight}
             onChanged={() => tasks.reload()}
             onEdit={setEditing}
             onOpenSession={(id) => {

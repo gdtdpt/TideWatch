@@ -69,12 +69,16 @@ export function Toggle({
   onChange,
   label,
   disabled = false,
+  size = 'md',
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   label: string;
   disabled?: boolean;
+  /** sm 用于任务卡这类高密度场景，省下 6px 高度和 8px 宽度 */
+  size?: 'sm' | 'md';
 }): ReactNode {
+  const sm = size === 'sm';
   return (
     <button
       type="button"
@@ -83,10 +87,12 @@ export function Toggle({
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition disabled:opacity-50 ${checked ? 'bg-sky-500' : 'bg-neutral-700'}`}
+      className={`relative shrink-0 rounded-full transition disabled:opacity-50 ${sm ? 'h-5 w-9' : 'h-6 w-11'} ${checked ? 'bg-sky-500' : 'bg-neutral-700'}`}
     >
       <span
-        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${checked ? 'left-[22px]' : 'left-0.5'}`}
+        className={`absolute rounded-full bg-white transition-all ${sm ? 'top-0.5 h-4 w-4' : 'top-0.5 h-5 w-5'} ${
+          checked ? (sm ? 'left-[18px]' : 'left-[22px]') : 'left-0.5'
+        }`}
       />
     </button>
   );
