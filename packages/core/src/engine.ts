@@ -576,7 +576,8 @@ export class Engine {
         manifest,
       };
 
-      this.#runtime(task.id, 'recording', `${streamer} · 第 ${nextPartNo} 段起`);
+      // 「第 N 段起」容易被读成"已经录了 N 段"，改成明确的"正在录第 N 段"
+      this.#runtime(task.id, 'recording', `正在录第 ${String(nextPartNo)} 段`);
       this.#emit('recording.started', { part: nextPartNo }, task.id, sessionId);
       this.#emit('recording.segment_started', { part: nextPartNo }, task.id, sessionId);
 
@@ -851,9 +852,14 @@ export class Engine {
     const base = { added: 0, lastEndS: 0, nextPartNo: ctx.startPartNo };
     const csv = await this.#d.fs.readText(joinPath(ctx.outputDir, segmentListName(ctx.sessionId)));
     if (csv === null) return base;
-    const entries = parseSegList(csv);
+    // ffmpeg 的 csv 段列表只在段「关闭」之后追加一行（+live 只是让列表随切片重写，
+    // 不会为正在写的段先占一行）。所以录制中也能取全部条目。
+    // 早先这里固定丢掉最后一条，本意是"最后一段可能还在写"，实际丢掉的是
+    // 最近一条**已经封口**的段 —— 于是录制期间永远少一段：默认分段 1 小时时，
+    // 表现为"录了一个多小时，界面上还是 0 段"，直到这场结束才补出来。
+    // 少数版本若先写一条时长 0 的占位行，用 end > start 过滤掉。
+    const entries = parseSegList(csv).filter((e) => e.end > e.start);
     if (entries.length === 0) return base;
-    const upto = ctx.final ? entries.length : entries.length - 1;
     let added = 0;
     let lastEndS = 0;
     // seglist 会跨连接累积（同一文件被下一个 ffmpeg 进程继续追加），
@@ -862,21 +868,34 @@ export class Engine {
     let maxPart = ctx.startPartNo - 1;
     for (const row of this.#d.store.listSegments(ctx.sessionId)) maxPart = Math.max(maxPart, row.partNo);
 
-    for (let i = 0; i < upto; i += 1) {
+    for (let i = 0; i < entries.length; i += 1) {
       const entry = entries[i];
       if (entry === undefined) continue;
       // seglist 里通常只有文件名；万一给了绝对路径也照用
       const path = /^[A-Za-z]:[\\/]|^\//.test(entry.file)
         ? entry.file
         : joinPath(ctx.outputDir, baseName(entry.file));
-      if (this.#d.store.getSegmentByPath(path) !== undefined) {
+      const isLast = i === entries.length - 1;
+      const existing = this.#d.store.getSegmentByPath(path);
+      if (existing !== undefined) {
+        // 录制中登记的段按当时情况判了 ok；收尾时如果它就是最后一段、且连接异常
+        // （崩溃、被强杀、stalled），要把完整性改判成 truncated，
+        // 否则崩溃丢掉的那截会一直显示"完好"。
+        if (ctx.final && isLast && ctx.abnormal && existing.integrity === 'ok') {
+          this.#d.store.setSegmentIntegrity(existing.id, 'truncated', primaryClass(ctx.classes));
+          this.#emit(
+            'recording.segment_integrity',
+            { part: existing.partNo, integrity: 'truncated' },
+            undefined,
+            ctx.sessionId,
+          );
+        }
         lastEndS = Math.max(lastEndS, entry.end);
         continue;
       }
       const size = await this.#d.fs.statSize(path);
       if (size <= 0) continue;
       const fp = await this.#d.probe.probe(path);
-      const isLast = i === entries.length - 1;
       const integrity = ctx.final && isLast && ctx.abnormal
         ? ('truncated' as const)
         : primaryClass(ctx.classes) !== null

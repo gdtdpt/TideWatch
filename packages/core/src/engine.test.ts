@@ -104,6 +104,41 @@ describe('M1 引擎：一场完整录制', () => {
     expect(h.store.listTasks()[0]?.recordRequested).toBe(false);
   });
 
+  it(
+    '录制中就把已封口的段登记进库（不等这场结束）',
+    async () => {
+      const { h, engine } = setup();
+      h.capture.plans = [
+        {
+          segments: [
+            { durationS: 60, sizeBytes: 1024 },
+            { durationS: 60, sizeBytes: 1024 },
+          ],
+          // 只有第 1 段封口：第 2 段还在写，ffmpeg 不会为它写文件或 csv 行
+          sealedCount: 1,
+        },
+      ];
+      h.resolver.queue = [liveOutcome()];
+
+      engine.start();
+      await waitFor(() => h.store.listSessions().length === 1, '会话建立');
+      const sessionId = h.store.listSessions()[0]?.id ?? '';
+
+      // 回归点：早先固定丢掉 seglist 的最后一条，导致已封口的第 1 段
+      // 迟迟不入库 —— 界面表现为"录了很久还是 0 段"。
+      await waitFor(() => h.store.listSegments(sessionId).length > 0, '第 1 段入库', 9_000);
+
+      const segments = h.store.listSegments(sessionId);
+      expect(segments).toHaveLength(1);
+      expect(segments[0]?.partNo).toBe(1);
+      expect(segments[0]?.durationS).toBe(60);
+      expect(h.store.listEvents({ limit: 100 }).map((e) => e.kind)).toContain('recording.segment_ended');
+      // 这场还没结束，别再往下录第二段
+      expect(h.store.listSessions()[0]?.endedAt).toBeNull();
+    },
+    15_000,
+  );
+
   it('异常退出后同一会话续录，段号不重复，缺口如实记账', async () => {
     const { h, engine, ended } = setup();
     h.capture.plans = [

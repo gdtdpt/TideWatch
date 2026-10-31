@@ -78,6 +78,8 @@ export interface ConnSegment {
 
 export interface ConnPlan {
   segments: ConnSegment[];
+  /** 只"封口"前 n 段 —— 模拟正在录制、后面的段还没切片 */
+  sealedCount?: number;
   /** 造完分段后自动退出；缺省 = 一直跑（等 stop/kill） */
   exit?: { code: number | null; signal?: string | null; afterMs?: number };
   stderr?: string[];
@@ -145,7 +147,10 @@ export class FakeHandle implements CaptureHandle {
     let csv = existing;
     let cursor = 0;
 
-    this.plan.segments.forEach((seg, i) => {
+    // ffmpeg 只在段关闭时往列表追加一行，所以"未封口"的段既没有文件也没有 csv 行
+    const sealed = Math.min(this.plan.sealedCount ?? this.plan.segments.length, this.plan.segments.length);
+
+    this.plan.segments.slice(0, sealed).forEach((seg, i) => {
       const partNo = startNumber + i;
       const file = joinPath(dir, `${sessionId}_part${String(partNo).padStart(3, '0')}.ts`);
       fs.put(file, seg.sizeBytes);

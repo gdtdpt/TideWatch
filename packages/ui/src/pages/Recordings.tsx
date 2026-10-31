@@ -50,7 +50,11 @@ export function Recordings({ tick, navigate }: { tick: number; navigate: (path: 
                     </span>
                     <span className="mt-0.5 block text-xs text-neutral-500">
                       {fmtTime(s.startedAt)} → {s.endedAt === null ? '进行中' : fmtTime(s.endedAt)} ·{' '}
-                      {fmtDuration(s.durationS ?? 0)} · {String(s.segmentCount ?? 0)} 段
+                      {fmtDuration(s.durationS ?? 0)} ·{' '}
+                      {/* 进行中的场次在第一段封口前就是 0 段，写"0 段"像是没在录 */}
+                      {s.endReason === null && (s.segmentCount ?? 0) === 0
+                        ? '首段录制中'
+                        : `${String(s.segmentCount ?? 0)} 段`}
                     </span>
                   </span>
                   <span className="shrink-0 text-right text-xs text-neutral-400">
