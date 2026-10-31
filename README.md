@@ -33,7 +33,7 @@ M6 的部署件（Docker、brew、systemd 模板目录）还空着——服务�
 
 ```
 packages/ui        React 19 + Vite 8 + Tailwind 4，hash 路由，构建产物由 server 静态分发
-      │  REST + WebSocket(/api/ws)
+      │  REST + SSE(/api/events/stream，主) / WS(/api/ws，兜底)
 packages/server    Fastify 5：鉴权、任务/会话/设置/通知/插件/诊断路由，SPA 分发
       │
 packages/core      引擎：轮询、录制、分段、重连、恢复、合并（纯函数 + Runner）

@@ -26,6 +26,28 @@ const here = dirname(fileURLToPath(import.meta.url));
 /** src/ 与 dist/ 同深度，两种运行方式都能定位到 packages/ui/dist */
 const UI_DIST = join(here, '../../ui/dist');
 
+/** 一条 SSE 响应流：写入/收尾由路由自己管，服务端只负责按帧推 */
+interface StreamSink {
+  write(chunk: string): void;
+  end(): void;
+}
+
+/**
+ * 统一载荷编码成 SSE 帧。
+ * `event` 帧带 `id:` —— 浏览器重连时自动回传 `Last-Event-ID`，
+ * 服务端据此只补发缺的那段，前端一行重连逻辑都不用写。
+ */
+function sseFrame(message: unknown): string {
+  const m = message as { type?: string; event?: { id?: number } };
+  if (m.type === 'event' && typeof m.event?.id === 'number') {
+    return `id: ${String(m.event.id)}\nevent: event\ndata: ${JSON.stringify(m.event)}\n\n`;
+  }
+  return `event: ${m.type ?? 'message'}\ndata: ${JSON.stringify(message)}\n\n`;
+}
+
+const firstHeader = (v: string | string[] | undefined): string | undefined =>
+  Array.isArray(v) ? v[0] : v;
+
 export interface BuildOptions {
   dataRoot: string;
   version?: string;
@@ -52,7 +74,10 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
     bodyLimit: 1024 * 1024,
   });
 
+  /** WS 订阅者（回退通道） */
   const clients = new Set<WebSocket>();
+  /** SSE 订阅者（主通道）：一条已编码好的 SSE 帧写进去即可 */
+  const streams = new Set<StreamSink>();
   const service =
     opts.service ??
     new TidewatchService({
@@ -108,10 +133,12 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
     onNotificationsRead: (unread) => broadcast({ type: 'notifications_read', unread }),
   });
 
-  // ── WS 事件流 ───────────────────────────────────────────────────────────
+  // ── 实时事件流 ──────────────────────────────────────────────────────────
+  // 主通道 SSE，回退 WS。两者的载荷是同一条消息：都只是"数据变脏"的提示，
+  // 真正的数据永远从 REST 取 —— 所以传输层可互换而不影响任何页面。
   let lastEventId = service.store.listEvents({ limit: 1 })[0]?.id ?? 0;
   const pump = setInterval(() => {
-    if (clients.size === 0) return;
+    if (clients.size === 0 && streams.size === 0) return;
     try {
       const events = service.store.listEvents({ since: lastEventId, limit: 200 });
       for (const event of events) {
@@ -135,7 +162,60 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
         }
       }
     }
+    const frame = sseFrame(message);
+    for (const stream of streams) {
+      try {
+        stream.write(frame);
+      } catch {
+        streams.delete(stream);
+      }
+    }
   }
+
+  /**
+   * SSE（主通道）：普通 HTTP 响应流。反代/隧道不必支持 Upgrade，断线由浏览器
+   * `EventSource` 自己重连（带 `Last-Event-ID`），这里只按游标补发缺的那段。
+   */
+  app.get<{ Querystring: { since?: string } }>('/api/events/stream', async (req, reply) => {
+    reply.hijack();
+    const res = reply.raw;
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      // nginx 默认缓冲响应，事件会被闷住不发；这个头让它直通
+      'x-accel-buffering': 'no',
+    });
+    res.write(': tidewatch events\n\n');
+
+    const sink: StreamSink = {
+      write: (chunk) => res.write(chunk),
+      end: () => res.end(),
+    };
+    // 先登记再回放：登记前泵推过的旧事件由回放补齐；重叠只会多几次"变脏"，
+    // 客户端已按 120ms 合并，不会连打接口。
+    streams.add(sink);
+
+    const since = Math.max(
+      Number(firstHeader(req.headers['last-event-id']) ?? 0) || 0,
+      Number(req.query.since ?? 0) || 0,
+    );
+    const cursor = lastEventId;
+    res.write(`event: hello\ndata: ${JSON.stringify({ since, cursor })}\n\n`);
+    if (since > 0 && since < cursor) {
+      for (const event of service.store.listEvents({ since, limit: 500 })) {
+        if (event.id > cursor) break;
+        res.write(sseFrame({ type: 'event', event }));
+      }
+    }
+
+    const drop = (): void => {
+      streams.delete(sink);
+    };
+    req.raw.on('close', drop);
+    req.raw.on('error', drop);
+    return reply;
+  });
 
   app.get('/api/ws', { websocket: true }, (socket) => {
     clients.add(socket);
@@ -159,6 +239,14 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
         client.send(JSON.stringify({ type: 'ping', at: Date.now() }));
       } catch {
         clients.delete(client);
+      }
+    }
+    // SSE 用注释行保活：不产生 message 事件，客户端不会被它吵醒
+    for (const stream of streams) {
+      try {
+        stream.write(': ping\n\n');
+      } catch {
+        streams.delete(stream);
       }
     }
   }, 25_000);
@@ -198,6 +286,15 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
       }
     }
     clients.clear();
+    // SSE 是长连接：不主动 end，app.close() 会一直等它们
+    for (const stream of streams) {
+      try {
+        stream.end();
+      } catch {
+        /* ignore */
+      }
+    }
+    streams.clear();
     await service.stop();
   });
 

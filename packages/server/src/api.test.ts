@@ -419,3 +419,54 @@ describe('WS 事件流鉴权', () => {
     expect(JSON.parse(hello)).toMatchObject({ type: 'hello' });
   });
 });
+
+describe('SSE 事件流（主通道）', () => {
+  it('没有会话 cookie 时直接 401，不会挂住连接', async () => {
+    const c = await makeApp();
+    await c.app.listen({ port: 0, host: '127.0.0.1' });
+    const address = c.app.server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/events/stream`, {
+      signal: AbortSignal.timeout(3_000),
+    });
+    expect(res.status).toBe(401);
+    await res.text();
+  });
+
+  it('先发 hello，再推新事件，且 event 帧带 id（Last-Event-ID 全靠它）', async () => {
+    const c = await makeApp();
+    await c.app.listen({ port: 0, host: '127.0.0.1' });
+    const address = c.app.server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/events/stream`, {
+      headers: { cookie: `${SESSION_COOKIE}=${c.sid}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    // 反代必须关缓冲，头要给出去
+    expect(res.headers.get('x-accel-buffering')).toBe('no');
+
+    const reader = res.body?.getReader();
+    expect(reader).toBeDefined();
+    if (reader === undefined) return;
+    const decoder = new TextDecoder();
+    let buf = '';
+    const until = async (needle: string): Promise<void> => {
+      while (!buf.includes(needle)) {
+        const chunk = await reader.read();
+        if (chunk.done === true) throw new Error(`流提前结束，已收到：${buf}`);
+        buf += decoder.decode(chunk.value, { stream: true });
+      }
+    };
+
+    await until('event: hello');
+    // 泵每 500ms 一拍，插一条事件后要等它推过来
+    c.service.store.insertEvent({ kind: 'test.tick' });
+    await until('event: event');
+    expect(buf).toMatch(/id: \d+\nevent: event/);
+    await reader.cancel();
+  });
+});

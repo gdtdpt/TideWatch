@@ -207,6 +207,10 @@ node packages/server/dist/cli.js serve     # 会生成新的并打印
 
 界面的分工是一句话：**总览看状态，任务管全量，录制看历史。**
 
+侧栏底部有「实时连接 · SSE」（或 `WS`）。这是事件通道的诊断位：绿色点 + `SSE` 表示
+改动会实时反映到页面；显示 `WS` 说明 SSE 建不起来已自动回退（功能不受影响，只是诊断信息）；
+灰点「已断开，正在重连」表示连不上服务端。
+
 ### 4.1 总览
 
 | 区域 | 内容 |
@@ -574,6 +578,7 @@ node tools/smoke.mjs --port 8686 --data ./data --shutdown
 | `GET /api/sessions/:id/events` | 事件流水 |
 | `POST /api/sessions/:id/merge` | 重新合并 |
 | `GET /api/events` | 全局事件（`?since=&limit=`） |
+| `GET /api/events/stream` | **SSE 实时通道**（主）：`Last-Event-ID` 或 `?since=` 作游标，25 秒 `: ping` 保活 |
 | `GET /api/videos?path=` | 播放产物（支持 Range，限制在录制目录内） |
 | `GET /api/notifications` · `POST /api/notifications/read` | 通知列表 / 全部已读 |
 | `GET /api/settings` · `PUT /api/settings` | 全局设置（含 paths / runtime） |
@@ -639,6 +644,26 @@ tsx/Node 版本一致时不用动数据库；schema 由内置迁移自动升级�
 - Cookie 存钥匙串；降级明文时会明说"未加密"。
 - 日志与诊断包**不含** token 与 cookie 明文。
 
+### 15.1 反代要点（SSE 会因此静默失效）
+
+实时通道是 SSE（`GET /api/events/stream`），是一条**不会结束的 HTTP 响应**。
+反代默认会缓冲它，表现是"页面能开、数据不自动更新"，且不报任何错。nginx 需要：
+
+```nginx
+location /api/events/stream {
+    proxy_pass http://127.0.0.1:8686;
+    proxy_buffering off;          # 关键：不关就攒着不发
+    proxy_cache off;
+    proxy_read_timeout 1h;        # 心跳 25s，够宽松即可
+    proxy_set_header Connection '';
+    proxy_http_version 1.1;
+}
+```
+
+服务端已发 `X-Accel-Buffering: no`，nginx 会认这个头；但显式写上更稳（其他网关不认）。
+Caddy 默认不缓冲，无需配置。实在不方便改反代时，前端加 `?transport=ws` 可回退到
+WebSocket —— 但那条路要求网关支持 `Upgrade`，未必更省事。
+
 ---
 
 ## 16. 故障排查
@@ -649,7 +674,9 @@ tsx/Node 版本一致时不用动数据库；schema 由内置迁移自动升级�
 | 粘 token 一直 401，日志里能登录成功 | 你在运行中删过 token 文件 | 重启 daemon（CLI 现在会提示这一点） |
 | 任务卡在 `needs_dep` | ffmpeg / python 找不到 | 「设置 → 运行环境」看来源；`pnpm fetch:ffmpeg`；或 `TIDEWATCH_FFMPEG` |
 | 一直 `reconnecting`，detail 是 `stream_eof` | 证书 / 请求头 / 流地址过期 | 手工验：`./vendor/ffmpeg/bin/ffmpeg -v error -t 5 -i <url> -f null -`；`certificate verify failed` → 查 `SSL_CERT_FILE` |
-| 一直 `重连中`，但录制其实在跑 | 反代掐了 WebSocket | 直连 8686 试；DevTools 看 `/api/ws` 是否 101 |
+| 一直 `重连中`，但录制其实在跑 | 反代掐了长连接 | 直连 8686 试；正常应显示「实时连接 SSE」 |
+| 页面数据不自动更新，侧栏显示 `SSE` 但点不动 | 反代缓冲了流式响应 | 地址加 `?transport=ws` 应急；根治见 §15：给 `/api/events/stream` 关 `proxy_buffering` |
+| 侧栏显示 `WS` 而不是 `SSE` | SSE 建不起来，已自动回退 | 少数老浏览器正常；若是反代/网关导致，看到 `502` 或非 `text/event-stream` 就会退回 |
 | 页面白屏 / 资源 404 | 只 `pnpm build` 了部分包 | `pnpm -r build`，确认 `packages/ui/dist/index.html` 存在 |
 | `curl` 写操作 403 `csrf` | 少了 CSRF 头 | 加 `-H 'X-TideWatch-Client: 1'` |
 | 启动直接退出，日志「引擎租约被占用」 | 同一数据根起了两个 daemon | `pgrep -fl 'cli.js serve'`，停掉一个（退出码 2 就是它） |

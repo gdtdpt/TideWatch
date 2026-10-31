@@ -62,7 +62,7 @@
 |---|---|---|
 | HTTP 框架 | **Fastify 5** | 原生 JSON Schema 校验（契约即代码）、生命周期钩子、`app.inject()` 免端口测试 |
 | 类型/schema | **TypeBox** + `@fastify/type-provider-typebox` | 编译期类型与运行时 schema 同源，一份定义两处用 |
-| WS | **ws**（`@fastify/websocket`） | 订阅者量级只有几十，不引 uWebSockets 原生依赖 |
+| 实时通道 | **SSE**（Fastify `reply.raw` 直写流）+ **ws** 兜底 | 只有服务端→客户端的单向提示，SSE 免依赖、断线自带 `Last-Event-ID` 补齐、反代不必支持 Upgrade；WS 仅在 SSE 不可用时启用 |
 | 静态资源 | `@fastify/static`（SPA fallback） | UI 与 API 同源，浏览器/手机/未来 PWA 一份产物 |
 | 会话 | `@fastify/cookie`（HttpOnly + SameSite=Lax） | token 换 session，7 天滚动 |
 | 限流 | `@fastify/rate-limit` | 登录 5 次/分钟/IP；WS 连接数另设上限 |
@@ -70,6 +70,30 @@
 | 校验边界 | 仅 API 入参用 schema；插件响应**宽容解析** | 展示字段容错、功能字段严格（旧版踩过"插件回整数 quality 让整条下载失败"） |
 | HTTP 客户端 | 内建 `fetch` | 推送渠道只需出站 POST |
 | 加密 | `node:crypto`（`randomBytes` / `timingSafeEqual`） | token 生成与比较，零依赖 |
+
+### 3.1 实时通道：SSE 为主，WS 只作回退
+
+界面只需要**服务端 → 客户端的单向提示**（"你手上的数据脏了"）。所有命令走 REST，
+一条上行消息都没有 —— 这是 SSE 的定义域。两者的载荷完全相同，所以传输层可以互换，
+页面逻辑一行都不用改。
+
+| 阶段 | 行为 |
+|---|---|
+| 默认 | `new EventSource('/api/events/stream')`，浏览器自动重连带 `Last-Event-ID`，服务端只补发缺的那段 |
+| 回退条件 ① | 浏览器没有 `EventSource` |
+| 回退条件 ② | `readyState === CLOSED`（不再自动重连：401、502、反代把流改成普通响应等） |
+| 不回退 | `CONNECTING` —— 那是浏览器自己在按退避重连，比手写稳 |
+| 应急开关 | 地址加 `?transport=ws` 强制走 WS（反代闷住流式响应时用） |
+
+实现上要守住四条，否则线上会以各种方式坏掉：
+
+1. **认证靠 cookie**：`EventSource` 不能带自定义头，只能靠同源 HttpOnly cookie。现有会话模型正好符合。
+2. **反代必须关缓冲**：响应带 `X-Accel-Buffering: no` + `Cache-Control: no-transform`；nginx 默认 `proxy_buffering on` 会让事件攒着不发，表现为"页面永远不更新"。
+3. **心跳用注释行**：25s 写一次 `: ping`，不产生 message 事件，客户端不会被吵醒。
+4. **HTTP/1.1 六连接上限**：每域最多 6 条连接，一条流占一条。所以**每个标签页只开一条**，6 个以上标签同时开会把其他请求排队。
+
+> 客户端还有一层 120ms 合并：一次录制会连着吐很多事件，逐条触发重拉会把接口打爆；
+> SSE 重连时的补发也靠它挡住。
 
 ## 4. 数据与文件
 
@@ -104,7 +128,7 @@
 |---|---|---|
 | 框架 | **React 19** + Vite | 与旧版延续，团队零学习成本 |
 | 样式 | **Tailwind 4** + **shadcn/ui**（Radix 行为层） | design token 集中定义，消灭散落硬编码色值 |
-| 服务端状态 | **TanStack Query 5** | 缓存/失效/重取与 WS 增量推送配合 |
+| 服务端状态 | **TanStack Query 5** | 缓存/失效/重取与实时通道的"变脏"信号配合 |
 | 本地状态 | **zustand** | 只放 UI 局部状态（当前页签、抽屉开合） |
 | 长列表 | **TanStack Virtual** | 会话/分段列表（旧版已有虚拟滚动） |
 | 表格 | **TanStack Table** | 排序/筛选/列宽，仅录制页用 |

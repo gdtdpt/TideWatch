@@ -79,10 +79,11 @@ cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest disc
 | — | 三个标志正交：`monitor_enabled` / `record_requested` / `check_now` | `server/api.test.ts` › 三个标志互不覆盖 |
 | — | 参数非法一律 400 且不落库（分段 30..43200、单场 600..21600、体积 1MiB..100GiB） | `server/api.test.ts` › 非法参数 400 |
 | — | 后处理是 202 + 事件反馈，不是同步 HTTP | `server/api.test.ts` › 202 |
-| — | 事件流可按 `since` 游标补齐（WS 断线的兜底） | `server/api.test.ts` › since 游标 |
+| — | 事件流可按 `since` 游标补齐（SSE 的 `Last-Event-ID` 与此同语义） | `server/api.test.ts` › since 游标 |
+| — | **SSE 主通道**：无会话 401、先发 hello、新事件带 `id:` 推送 | `server/api.test.ts` › SSE 事件流（主通道） |
 | — | 未登录全端点 401（未知 `/api` 也先 401，fail-closed） | `server/app.test.ts` › 未知路径 |
 | — | 非安全方法缺 `X-TideWatch-Client` → 403（CSRF） | `server/app.test.ts` |
-| — | **WS 升级必须认证**（否则局域网任何人 `wscat` 就能看流水） | `server/api.test.ts` › 无 cookie 升级被拒 401 / 带 cookie 收到 hello |
+| — | **WS 升级必须认证**（回退通道同样不能裸奔） | `server/api.test.ts` › 无 cookie 升级被拒 401 / 带 cookie 收到 hello |
 | — | 设置项"谁在什么时机读"：轮询需重启，其余立即生效（提示语要区分） | `server/api.test.ts` › 设置 note |
 | — | 通知纪律：info 只进铃铛、warn/error 才外发、同 (kind,task) 10 分钟去重 | `notify/dispatcher.test.ts`（6 条） |
 | — | 渠道失败/抛异常只记账，不影响其他渠道与录制 | `notify/dispatcher.test.ts` |
@@ -125,4 +126,4 @@ cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest disc
 - [ ] **短 cap 滚动**：把 `maxSessionS` 调成 600、段长 30 → 观察 10 分钟出现 `origin=cap` 的第二场
 - [ ] **手机浏览器**：iPhone Safari / Android Chrome 打开 LAN 地址 → 登录、看任务、播放产物、时间轴不溢出
 - [ ] **通知到达**：配 ntfy 或 Bark → 制造一次合并失败 → 手机收到推送，铃铛未读 +1
-- [ ] **反代/隧道**：Tailscale Serve 或 Caddy 前置 → 事件流不被缓冲（服务端每 25s 发 `{"type":"ping"}` 保活，2026-10-31 补上；此前代码里并没有心跳，只有事件推送）
+- [ ] **反代/隧道**：Tailscale Serve 或 Caddy 前置 → 事件流不被缓冲（SSE 走 `GET /api/events/stream`，每 25s 写 `: ping` 注释行保活；nginx 需 `proxy_buffering off`，见手册 §15.1）

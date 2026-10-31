@@ -186,7 +186,7 @@ packages/
 ├── protocol/       # 协议 2 + 清单白名单 + 注册表遮蔽 + 插件宿主（三道闸）
 ├── notify/         # 派生层（去重/扇出）+ ntfy/Bark/Telegram/SMTP/WebPush
 ├── host-adapter/   # 五项接口 + 三平台实现（进程树/钥匙串/服务注册/路径/租约）
-├── server/         # fastify REST + WS + 鉴权 + SSE 未采纳；CLI：serve/status/token/diagnose/stop
+├── server/         # fastify REST + SSE（主）+ WS（兜底）+ 鉴权；CLI：serve/status/token/diagnose/stop
 └── ui/             # React 19 + Vite + Tailwind 4：总览/录制/会话详情（图形化时间轴）/设置
 plugins/streamget-plugin/   # Python 插件原样平移（40 条离线用例通过）
 ```

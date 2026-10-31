@@ -25,7 +25,10 @@ export function App(): ReactNode {
   const [bell, setBell] = useState(false);
   const [unread, setUnread] = useState(0);
 
-  const connected = useLive(() => setTick((t) => t + 1), auth === 'in');
+  const live = useLive(() => setTick((t) => t + 1), auth === 'in');
+  const connected = live.connected;
+  /** 传输层只影响诊断，不影响功能：两种通道都只是"变脏"信号 */
+  const transportLabel = live.transport === 'sse' ? 'SSE' : live.transport === 'ws' ? 'WS' : '—';
 
   // 角标数字的唯一来源。标记已读是用户主动操作、不产生 WS 事件，
   // 所以通知面板会把接口返回的最新未读数回写进来（否则角标要等下一个事件才变）。
@@ -96,9 +99,10 @@ export function App(): ReactNode {
           })}
         </nav>
         <div className="mt-auto space-y-2 pt-6 text-xs text-neutral-500">
-          <p className="flex items-center gap-2">
+          <p className="flex items-center gap-2" title={`事件通道：${transportLabel}`}>
             <span className={`inline-block h-2 w-2 rounded-full ${connected ? 'bg-emerald-400' : 'bg-neutral-600'}`} />
             {connected ? '实时连接' : '已断开，正在重连'}
+            {connected && <span className="text-[10px] text-neutral-600">{transportLabel}</span>}
           </p>
           <button
             className="hover:text-neutral-300"
