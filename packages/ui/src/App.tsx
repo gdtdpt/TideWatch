@@ -7,11 +7,13 @@ import { Overview } from './pages/Overview.tsx';
 import { Recordings } from './pages/Recordings.tsx';
 import { SessionDetail } from './pages/SessionDetail.tsx';
 import { Settings } from './pages/Settings.tsx';
+import { Tasks } from './pages/Tasks.tsx';
 
 type Auth = 'checking' | 'in' | 'out';
 
 const NAV = [
   { path: '', label: '总览' },
+  { path: 'tasks', label: '任务' },
   { path: 'recordings', label: '录制' },
   { path: 'settings', label: '设置' },
 ];
@@ -132,6 +134,7 @@ export function App(): ReactNode {
 
         <main className="mx-auto w-full max-w-6xl flex-1 p-4 pb-24 lg:p-6 lg:pb-6">
           {route.page === 'overview' && <Overview tick={tick} navigate={nav} />}
+          {route.page === 'tasks' && <Tasks tick={tick} navigate={nav} />}
           {route.page === 'recordings' && <Recordings tick={tick} navigate={nav} />}
           {route.page === 'session' && (
             <SessionDetail id={route.id} tick={tick} back={() => nav('recordings')} />

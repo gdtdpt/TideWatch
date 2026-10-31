@@ -1,25 +1,21 @@
 import { useState, type ReactNode } from 'react';
 import {
   api,
-  ApiError,
   END_REASON_LABEL,
   fmtBytes,
   fmtDuration,
   fmtTime,
-  STATE_LABEL,
   type Health,
   type Session,
   type Task,
 } from '../api.ts';
-import { Badge, Button, Card, Empty, ErrorText, Field, Input, Modal, PageHeader, Select, Toggle } from '../components.tsx';
-import { useAsync, useNow } from '../hooks.ts';
+import { Badge, Button, Card, Empty, PageHeader } from '../components.tsx';
+import { useAsync } from '../hooks.ts';
+import { AddTaskCard, TaskEditor, TaskList, sortTasks } from '../taskViews.tsx';
 
-const stateTone = (state: string): 'ok' | 'warn' | 'error' | 'info' | 'neutral' => {
-  if (state === 'recording') return 'ok';
-  if (state === 'reconnecting' || state === 'resolving' || state === 'finalizing') return 'info';
-  if (state === 'waiting' || state === 'snoozed' || state === 'idle') return 'neutral';
-  return 'error';
-};
+/** 总览只放"一眼要看到的东西"：状态、入口、最近几条。全量在「任务」页。 */
+const PREVIEW_COUNT = 6;
+const RECENT_COUNT = 6;
 
 export function Overview({ tick, navigate }: { tick: number; navigate: (path: string) => void }): ReactNode {
   const health = useAsync<Health>(() => api.get('/api/health'), [tick]);
@@ -28,53 +24,18 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
     () => api.get('/api/sessions?limit=20'),
     [tick],
   );
-  const [url, setUrl] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<Task | null>(null);
-  const now = useNow();
 
-  const add = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      // 插件探测是外网请求，给个上限：卡住时要说"等超时了"，不能一直转圈
-      const res = await api.post<{ task: Task }>('/api/tasks', { url: url.trim(), monitor: true }, 60_000);
-      setUrl('');
-      setHighlight(res.task.id);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        // 不是失败：任务早就在了（可能上一次"看起来失败"其实已入库）
-        setUrl('');
-        setNotice('这个地址已经在任务里了，已在下面标出来');
-        const detail = err.detail;
-        setHighlight(
-          typeof detail === 'object' && detail !== null && 'taskId' in detail
-            ? String((detail as { taskId: unknown }).taskId)
-            : null,
-        );
-      } else {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      setBusy(false);
-      // 成功失败都刷新：上一次请求可能"客户端失败、服务端已建成"
-      tasks.reload();
-    }
-  };
-
-  const act = async (fn: () => Promise<unknown>): Promise<void> => {
-    setError(null);
-    try {
-      await fn();
-      tasks.reload();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
+  const all = tasks.data?.tasks ?? [];
+  const sorted = sortTasks(all);
+  const preview = sorted.slice(0, PREVIEW_COUNT);
+  // 刚添加/重复的那条如果排在 6 条之外，临时提到最前面 —— 否则提示"已为你标出来"却看不见
+  if (highlight !== null && !preview.some((t) => t.id === highlight)) {
+    const hit = all.find((t) => t.id === highlight);
+    if (hit !== undefined) preview.unshift(hit);
+  }
+  const liveCount = all.filter((t) => t.runtime.state === 'recording' || t.runtime.state === 'reconnecting').length;
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -84,7 +45,12 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
     <div className="space-y-4">
       <PageHeader
         title="总览"
-        subtitle={`${String(tasks.data?.tasks.length ?? 0)} 个任务 · 今天 ${String(todays.length)} 场`}
+        subtitle={`${String(all.length)} 个任务 · ${String(liveCount)} 个在录 · 今天 ${String(todays.length)} 场`}
+        actions={
+          <Button variant="ghost" onClick={() => navigate('tasks')}>
+            全部任务
+          </Button>
+        }
       />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -103,108 +69,46 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
         />
       </div>
 
-      <Card title="添加直播间">
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://live.douyin.com/… / https://live.bilibili.com/… / .m3u8 直链"
+      <AddTaskCard
+        onSettled={(taskId) => {
+          if (taskId !== null) setHighlight(taskId);
+          tasks.reload();
+        }}
+      />
+
+      <Card
+        title="最近任务"
+        actions={
+          <button className="text-xs text-sky-300 hover:underline" onClick={() => navigate('tasks')}>
+            全部 {all.length} 个 →
+          </button>
+        }
+      >
+        {tasks.data === null && tasks.loading && <Empty>正在加载任务…</Empty>}
+        {tasks.data !== null && all.length === 0 && (
+          <Empty>还没有任务。填一个直播间地址，开播后会自动录制。</Empty>
+        )}
+        {preview.length > 0 && (
+          <TaskList
+            tasks={preview}
+            onChanged={() => tasks.reload()}
+            onEdit={setEditing}
+            onOpenSession={(id) => {
+              if (id.length > 0) navigate(`session/${id}`);
+            }}
           />
-          <Button onClick={() => void add()} disabled={busy || url.trim().length === 0} className="sm:w-28">
-            {busy ? '解析中…' : '添加'}
-          </Button>
-        </div>
-        {error !== null && <div className="mt-2"><ErrorText>{error}</ErrorText></div>}
-        {notice !== null && <p className="mt-2 text-xs text-sky-300">{notice}</p>}
+        )}
+        {all.length > preview.length && (
+          <p className="mt-2 text-center text-[11px] text-neutral-500">
+            这里只显示 {preview.length} 个，其余 {all.length - preview.length} 个在「任务」页
+          </p>
+        )}
       </Card>
-
-      {tasks.data === null && tasks.loading && <Empty>正在加载任务…</Empty>}
-      {tasks.data !== null && tasks.data.tasks.length === 0 && (
-        <Empty>还没有任务。填一个直播间地址，开播后会自动录制。</Empty>
-      )}
-
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        {(tasks.data?.tasks ?? []).map((task) => {
-          const runtime = task.runtime;
-          const recording = runtime.state === 'recording' || runtime.state === 'reconnecting';
-          const elapsed = recording ? (now - new Date(runtime.updatedAt).getTime()) / 1000 : 0;
-          return (
-            <Card
-              key={task.id}
-              className={task.id === highlight ? 'ring-1 ring-sky-500/70' : 'transition-shadow'}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="truncate text-base font-medium">{task.streamerName ?? '未命名直播间'}</h3>
-                    <Badge tone={stateTone(runtime.state)}>{STATE_LABEL[runtime.state] ?? runtime.state}</Badge>
-                    {task.recordRequested && <Badge tone="info">已请求录制</Badge>}
-                    {/* state=snoozed 的徽标已经写着"本场已跳过"，别重复两遍 */}
-                    {task.skipCurrentLive && runtime.state !== 'snoozed' && <Badge>本场已跳过</Badge>}
-                  </div>
-                  <p className="mt-0.5 truncate text-xs text-neutral-500">{task.title ?? task.url}</p>
-                  {runtime.detail !== null && <p className="mt-1 truncate text-xs text-neutral-400">{runtime.detail}</p>}
-                  {recording && elapsed > 0 && (
-                    <p className="mt-1 text-xs text-emerald-300">已录 {fmtDuration(elapsed)}（当前连接）</p>
-                  )}
-                  <p className="mt-2 text-[11px] text-neutral-500">
-                    {task.latestSession !== null
-                      ? `上一场 ${fmtTime(task.latestSession.startedAt)} · ${END_REASON_LABEL[task.latestSession.endReason ?? ''] ?? '进行中'}`
-                      : '还没有录制记录'}
-                    {' · '}画质 {task.quality ?? '默认'}
-                    {' · '}分段 {fmtDuration(task.segmentTimeS)}
-                  </p>
-                </div>
-                <div className="flex shrink-0 flex-col items-end gap-2">
-                  <span className="flex items-center gap-1 text-xs text-neutral-400">
-                    监控
-                    <Toggle
-                      checked={task.monitorEnabled}
-                      label="监控开关"
-                      onChange={(next) => void act(() => api.post(`/api/tasks/${task.id}/monitor`, { enabled: next }))}
-                    />
-                  </span>
-                </div>
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                {recording ? (
-                  <Button variant="danger" onClick={() => void act(() => api.post(`/api/tasks/${task.id}/record`, { recording: false }))}>
-                    停止录制
-                  </Button>
-                ) : (
-                  <Button variant="subtle" onClick={() => void act(() => api.post(`/api/tasks/${task.id}/record`, { recording: true }))}>
-                    开始录制
-                  </Button>
-                )}
-                <Button variant="ghost" onClick={() => void act(() => api.post(`/api/tasks/${task.id}/check`))}>
-                  立即检查
-                </Button>
-                <Button variant="ghost" onClick={() => setEditing(task)}>
-                  设置
-                </Button>
-                <Button variant="ghost" onClick={() => navigate(`session/${task.latestSession?.id ?? ''}`)} disabled={task.latestSession === null}>
-                  最近一场
-                </Button>
-                <Button
-                  variant="danger"
-                  onClick={() => {
-                    if (!window.confirm(`删除任务「${task.streamerName ?? task.url}」？这会同时移除它的录制历史索引（磁盘上的视频文件保留）。`)) return;
-                    void act(() => api.del(`/api/tasks/${task.id}`));
-                  }}
-                >
-                  删除
-                </Button>
-              </div>
-            </Card>
-          );
-        })}
-      </div>
 
       {sessions.data !== null && sessions.data.sessions.length > 0 && (
         <Card title="最近录制">
           <ul className="divide-y divide-neutral-800 text-sm">
-            {sessions.data.sessions.slice(0, 6).map((s) => (
+            {sessions.data.sessions.slice(0, RECENT_COUNT).map((s) => (
               <li key={s.id} className="flex items-center justify-between gap-3 py-2">
                 <button className="min-w-0 text-left hover:text-sky-300" onClick={() => navigate(`session/${s.id}`)}>
                   <span className="truncate">{s.streamerName ?? s.taskId.slice(0, 8)}</span>
@@ -224,6 +128,10 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
           task={editing}
           onClose={() => setEditing(null)}
           onSaved={() => {
+            setEditing(null);
+            tasks.reload();
+          }}
+          onDeleted={() => {
             setEditing(null);
             tasks.reload();
           }}
@@ -252,84 +160,5 @@ function Stat({
       </p>
       <p className="mt-0.5 truncate text-[11px] text-neutral-600">{hint}</p>
     </div>
-  );
-}
-
-function TaskEditor({
-  task,
-  onClose,
-  onSaved,
-}: {
-  task: Task;
-  onClose: () => void;
-  onSaved: () => void;
-}): ReactNode {
-  const [quality, setQuality] = useState(task.quality ?? '');
-  const [segmentTimeS, setSegmentTimeS] = useState(task.segmentTimeS);
-  const [postprocess, setPostprocess] = useState(task.postprocess);
-  const [maxSessionS, setMaxSessionS] = useState(task.maxSessionS);
-  const [maxSessionBytes, setMaxSessionBytes] = useState(Math.round(task.maxSessionBytes / 1024 ** 2));
-  const [error, setError] = useState<string | null>(null);
-
-  const save = async (): Promise<void> => {
-    setError(null);
-    try {
-      await api.patch(`/api/tasks/${task.id}`, {
-        quality,
-        segmentTimeS,
-        postprocess,
-        maxSessionS,
-        maxSessionBytes: maxSessionBytes * 1024 ** 2,
-      });
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  return (
-    <Modal title={`任务设置 · ${task.streamerName ?? ''}`} onClose={onClose}>
-      <div className="space-y-3">
-        <Field label="画质（由插件解释）" hint={task.qualityOptions.length > 0 ? `可选：${task.qualityOptions.join(' / ')}` : '该房间还没解析出可选档位'}>
-          <Input value={quality} onChange={(e) => setQuality(e.target.value)} placeholder="原画 / OD / 留空用平台默认" />
-        </Field>
-        <Field label="分段时长（秒）" hint="下一次开录生效；30..43200">
-          <Input
-            type="number"
-            value={segmentTimeS}
-            onChange={(e) => setSegmentTimeS(Number(e.target.value))}
-            min={30}
-            max={43200}
-          />
-        </Field>
-        <Field label="后处理" hint="会话收尾时读取，因此录到一半改成 manual 也有效">
-          <Select value={postprocess} onChange={(e) => setPostprocess(e.target.value as Task['postprocess'])}>
-            <option value="merge">合并为一个 MP4</option>
-            <option value="per_segment">每段独立 MP4</option>
-            <option value="manual">只落 TS，手动触发</option>
-          </Select>
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="单场时长上限（秒）" hint="0 = 默认 6 小时；600..21600">
-            <Input type="number" value={maxSessionS} onChange={(e) => setMaxSessionS(Number(e.target.value))} min={0} />
-          </Field>
-          <Field label="单场体积上限（MiB）" hint="0 = 默认 20 GiB">
-            <Input
-              type="number"
-              value={maxSessionBytes}
-              onChange={(e) => setMaxSessionBytes(Number(e.target.value))}
-              min={0}
-            />
-          </Field>
-        </div>
-        {error !== null && <ErrorText>{error}</ErrorText>}
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>
-            取消
-          </Button>
-          <Button onClick={() => void save()}>保存</Button>
-        </div>
-      </div>
-    </Modal>
   );
 }

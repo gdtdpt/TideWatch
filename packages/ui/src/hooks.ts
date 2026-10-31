@@ -94,6 +94,7 @@ export function useLive(onEvent: () => void, enabled = true): boolean {
 
 export type Route =
   | { page: 'overview' }
+  | { page: 'tasks' }
   | { page: 'recordings' }
   | { page: 'session'; id: string }
   | { page: 'settings' };
@@ -101,6 +102,7 @@ export type Route =
 export function parseRoute(hash: string): Route {
   const clean = hash.replace(/^#\/?/, '');
   const [head, id] = clean.split('/');
+  if (head === 'tasks') return { page: 'tasks' };
   if (head === 'recordings') return { page: 'recordings' };
   if (head === 'settings') return { page: 'settings' };
   if (head === 'session' && id !== undefined && id.length > 0) return { page: 'session', id };
