@@ -105,7 +105,8 @@ cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest disc
 
 ## 6. 待真机验收（自动化替代不了的部分）
 
-每条都是"跑一次、看一眼"的动作，交付前必须做完并记录结果：
+每条都是"跑一次、看一眼"的动作，交付前必须做完并记录结果。
+**可执行版本见 [`docs/manual-test.md`](./manual-test.md)**（逐条命令、通过判据、排错对照表）。
 
 - [x] **B站真机短录**：`tidewatch serve` → 加一个真实直播间 → 开录 2 分钟 → 产物可播、段边界连续、manifest 无 gap
       ✅ **2026-10-29 通过**（ffmpeg 9.0.2 vendor / 房间 5050）
@@ -124,4 +125,4 @@ cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest disc
 - [ ] **短 cap 滚动**：把 `maxSessionS` 调成 600、段长 30 → 观察 10 分钟出现 `origin=cap` 的第二场
 - [ ] **手机浏览器**：iPhone Safari / Android Chrome 打开 LAN 地址 → 登录、看任务、播放产物、时间轴不溢出
 - [ ] **通知到达**：配 ntfy 或 Bark → 制造一次合并失败 → 手机收到推送，铃铛未读 +1
-- [ ] **反代/隧道**：Tailscale Serve 或 Caddy 前置 → 事件流不被缓冲（25s 心跳不断流）
+- [ ] **反代/隧道**：Tailscale Serve 或 Caddy 前置 → 事件流不被缓冲（服务端每 25s 发 `{"type":"ping"}` 保活，2026-10-31 补上；此前代码里并没有心跳，只有事件推送）

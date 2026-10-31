@@ -18,4 +18,17 @@ export default tseslint.config(
       'no-console': 'off',
     },
   },
+  // tools/ 下的运维脚本是纯 Node ESM（无 TS 解析器，也就没有自动注入的全局）
+  {
+    files: ['tools/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        fetch: 'readonly',
+        WebSocket: 'readonly',
+        setTimeout: 'readonly',
+      },
+    },
+  },
 );

@@ -52,7 +52,15 @@ export function useLive(onEvent: () => void, enabled = true): boolean {
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
       socket = new WebSocket(`${proto}://${window.location.host}/api/ws`);
       socket.onopen = () => setConnected(true);
-      socket.onmessage = () => handler.current();
+      socket.onmessage = (ev: MessageEvent) => {
+        // 心跳只用来保活，不触发重拉数据
+        try {
+          if ((JSON.parse(String(ev.data)) as { type?: string }).type === 'ping') return;
+        } catch {
+          /* 非 JSON 也按数据变更处理 */
+        }
+        handler.current();
+      };
       socket.onclose = () => {
         setConnected(false);
         if (!closed) timer = window.setTimeout(connect, 2000);
@@ -76,7 +84,10 @@ export function useLive(onEvent: () => void, enabled = true): boolean {
         /* ignore */
       }
     };
-  }, []);
+    // `enabled` 必须进依赖：App 首帧是 auth='checking'（enabled=false），
+    // 空依赖会让这个 effect 永远不重跑 —— 登录成功后 WS 永不连接，
+    // 界面一直停在「已断开，正在重连」，而 REST 全是好的，很难察觉。
+  }, [enabled]);
 
   return connected;
 }

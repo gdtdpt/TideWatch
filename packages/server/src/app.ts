@@ -140,6 +140,26 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
     socket.on('error', () => clients.delete(socket));
   });
 
+  /**
+   * 心跳：没有事件时连接是"哑"的，反代/负载均衡的空闲超时（nginx 默认 60s）
+   * 会把它悄悄掐掉，前端表现为间歇性"正在重连"。25s 一拍既保住连接，
+   * 又让中间的每段代理都有流量可循。
+   */
+  const heartbeat = setInterval(() => {
+    for (const client of clients) {
+      if (client.readyState !== 1) {
+        clients.delete(client);
+        continue;
+      }
+      try {
+        client.send(JSON.stringify({ type: 'ping', at: Date.now() }));
+      } catch {
+        clients.delete(client);
+      }
+    }
+  }, 25_000);
+  heartbeat.unref();
+
   if (existsSync(UI_DIST)) {
     await app.register(fastifyStatic, { root: UI_DIST, wildcard: true });
   } else {
@@ -165,6 +185,7 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
 
   app.addHook('onClose', async () => {
     clearInterval(pump);
+    clearInterval(heartbeat);
     for (const client of clients) {
       try {
         client.close();

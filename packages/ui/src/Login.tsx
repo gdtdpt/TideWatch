@@ -30,7 +30,7 @@ export function Login({ onDone }: { onDone: () => void }): ReactNode {
       <section className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5">
         <h2 className="text-sm font-medium text-neutral-300">粘贴访问 token</h2>
         <p className="mt-1 text-xs text-neutral-500">
-          首次启动时终端会打印；也可在服务器上执行 <code className="text-neutral-300">tidewatch token --show</code>，
+          首次启动时终端会打印；也可在服务器上执行 <code className="text-neutral-300">tidewatch token</code>，
           或读取数据根下的 <code className="text-neutral-300">auth-token.txt</code>。
         </p>
         <form
