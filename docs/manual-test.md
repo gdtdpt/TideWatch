@@ -57,7 +57,7 @@ node packages/server/dist/cli.js serve --port 8686 --data-root ./data
 |---|---|
 | `--port` / `-p` | 端口，默认 8686 |
 | `--host` / `-H` | 监听地址，默认 `0.0.0.0`（手机能访问）；只给本机用就写 `127.0.0.1` |
-| `--data-root` / `-d` | 数据根（token、sqlite、downloads 都在这里），默认 `./data` |
+| `--data-root` / `-d` | 数据根（token、sqlite、downloads 都在这里）；默认是**仓库根的 `data/`**，脱离仓库时退回 `./data` |
 | `TIDEWATCH_FFMPEG` / `TIDEWATCH_FFPROBE` | 指定二进制绝对路径，优先级最高 |
 | `TIDEWATCH_SECURE_COOKIE=1` | 走 https 反代时才开（cookie 加 Secure） |
 

@@ -3,6 +3,7 @@
  * CLI：`serve` 是唯一常驻形态；其余子命令都是控制面客户端。
  * 退出只有一条管道：HTTP `/api/shutdown` 与 SIGTERM/SIGINT 调同一个 shutdown()。
  */
+import { readFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Command } from 'commander';
@@ -13,9 +14,40 @@ import { TidewatchService } from './service.ts';
 
 const VERSION = '0.0.0';
 const here = import.meta.dirname;
+/** `src/`（tsx 开发）与 `dist/`（构建产物）向上一层都是仓库根 */
+const repoRoot = resolve(here, '../../..');
 
+/**
+ * 数据根默认值：**不跟 cwd 走**。
+ *
+ * `pnpm --filter @tidewatch/server dev|start` 会把 cwd 切到 `packages/server`，
+ * 于是同一个仓库从不同入口启动会各自生成一套 `data/`（token、sqlite、downloads
+ * 全不一样）—— 表现是"页面能开但 401 / 任务列表是空的"，而且很难联想到数据根。
+ * 只要能认出这是仓库（根 package.json 的名字），就固定用仓库根的 `data/`；
+ * 不像仓库的形态（全局安装、单目录分发）才退回 cwd。
+ */
 function defaultDataRoot(): string {
-  return process.env['TIDEWATCH_DATA_ROOT'] ?? resolve(process.cwd(), 'data');
+  const env = process.env['TIDEWATCH_DATA_ROOT'];
+  if (env !== undefined && env.trim().length > 0) return resolve(env);
+  try {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { name?: string };
+    if (pkg.name === 'tidewatch-daemon') return join(repoRoot, 'data');
+  } catch {
+    /* 没有仓库根的 package.json：按 cwd 兜底 */
+  }
+  return resolve(process.cwd(), 'data');
+}
+
+/** 本机 daemon 用的数据根（null = 没连上），用于判断"新 token 是否与运行中的进程对得上" */
+async function runningDataRoot(port: number): Promise<string | null> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${String(port)}/api/health`, { signal: AbortSignal.timeout(1500) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { paths?: { dataRoot?: string } };
+    return body.paths?.dataRoot ?? '';
+  } catch {
+    return null;
+  }
 }
 
 function lanAddresses(): string[] {
@@ -177,11 +209,23 @@ program
   .command('token')
   .description('显示访问 token（本机操作）')
   .option('-d, --data-root <path>', '数据根目录')
-  .action((opts: { dataRoot?: string }) => {
+  .option('-p, --port <port>', '探测本机 daemon 的端口（仅用于提示）', '8686')
+  .action(async (opts: { dataRoot?: string; port: string }) => {
     const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
     const { token, created } = loadOrCreateToken(dataRoot);
-    console.log(created ? `已生成新 token（写入 ${join(dataRoot, 'auth-token.txt')}）：` : '当前 token：');
+    if (created) console.log(`已生成新 token（写入 ${join(dataRoot, 'auth-token.txt')}）：`);
+    else console.log(`当前 token（${join(dataRoot, 'auth-token.txt')}）：`);
     console.log(token);
+    // 文件是刚建的，说明之前被删了；此时若同一个数据根上的 daemon 还在跑，
+    // 它手里仍是旧 token，粘这个新的一律 401 —— 必须重启才生效，提前讲清楚省一轮排查。
+    if (created) {
+      const running = await runningDataRoot(Number(opts.port));
+      if (running !== null && resolve(running) === resolve(dataRoot)) {
+        console.warn(
+          `注意：${String(opts.port)} 端口上的 daemon 仍在用旧 token，重启后这个新 token 才会生效。`,
+        );
+      }
+    }
   });
 
 program

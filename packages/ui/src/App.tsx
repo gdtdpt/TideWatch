@@ -66,7 +66,10 @@ export function App(): ReactNode {
 
   return (
     <div className="min-h-screen lg:flex">
-      <aside className="hidden w-56 shrink-0 border-r border-neutral-800 p-4 lg:flex lg:flex-col">
+      {/* sticky + h-screen + self-start：菜单钉在视口里，右侧内容再长也不会把它
+          顶出屏幕。self-start 不能省 —— flex 默认 stretch 会把侧栏拉到与内容等高，
+          那样 sticky 就没有可粘的余量，等于没设。 */}
+      <aside className="hidden w-56 shrink-0 border-r border-neutral-800 p-4 lg:sticky lg:top-0 lg:flex lg:h-screen lg:self-start lg:flex-col lg:overflow-y-auto">
         <div className="mb-6">
           <p className="text-lg font-semibold tracking-tight">TideWatch</p>
           <p className="text-[11px] text-neutral-500">潮录 · 直播自动录制</p>

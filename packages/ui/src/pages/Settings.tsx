@@ -500,9 +500,20 @@ function CookieCard({
         ))}
       </ul>
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-        <Input value={platform} onChange={(e) => setPlatform(e.target.value)} placeholder="平台 key（如 douyin）" className="sm:w-40" />
-        <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder="粘贴 Cookie 字符串" />
-        <Button onClick={() => void save()} disabled={platform.trim().length === 0 || value.trim().length === 0}>
+        <Input
+          value={platform}
+          onChange={(e) => setPlatform(e.target.value)}
+          placeholder="平台 key（如 douyin）"
+          className="sm:w-40 sm:shrink-0"
+        />
+        {/* 输入框 w-full 会把同行按钮挤到只剩一个字宽（"保/存"竖排），
+            这里给输入框 min-w-0 占地、给按钮 shrink-0 钉住 */}
+        <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder="粘贴 Cookie 字符串" className="sm:min-w-0 sm:flex-1" />
+        <Button
+          className="shrink-0"
+          onClick={() => void save()}
+          disabled={platform.trim().length === 0 || value.trim().length === 0}
+        >
           保存
         </Button>
       </div>
