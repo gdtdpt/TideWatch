@@ -20,7 +20,12 @@ interface CookieMeta {
 
 const MASK = (value: string): string => `${value.slice(0, 6)}…（${String(value.length)} 字符）`;
 
-export function registerSystemRoutes(app: FastifyInstance, service: TidewatchService): void {
+export function registerSystemRoutes(
+  app: FastifyInstance,
+  service: TidewatchService,
+  /** 标记已读是"阅读"不是"事件"，不会进 events 表；靠这条回调让其他已连接的客户端同步角标 */
+  hooks: { onNotificationsRead?: (unread: number) => void } = {},
+): void {
   app.get('/api/health', { config: { public: true } }, async () => ({
     ok: true,
     name: 'tidewatch',
@@ -159,7 +164,9 @@ export function registerSystemRoutes(app: FastifyInstance, service: TidewatchSer
       ? (req.body['ids'] as unknown[]).filter((x): x is number => typeof x === 'number')
       : [];
     service.store.markNotificationsRead(ids);
-    return { ok: true, unread: service.store.unreadNotificationCount() };
+    const unread = service.store.unreadNotificationCount();
+    hooks.onNotificationsRead?.(unread);
+    return { ok: true, unread };
   });
 }
 

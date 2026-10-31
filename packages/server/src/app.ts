@@ -102,7 +102,11 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
   registerTaskRoutes(app, service);
   registerSessionRoutes(app, service);
   registerSettingsRoutes(app, service);
-  registerSystemRoutes(app, service);
+  registerSystemRoutes(app, service, {
+    // 在别的标签页/手机上点了已读，角标要跟着变；这条消息不进 events 表，
+    // 只用来触发各客户端重拉未读数
+    onNotificationsRead: (unread) => broadcast({ type: 'notifications_read', unread }),
+  });
 
   // ── WS 事件流 ───────────────────────────────────────────────────────────
   let lastEventId = service.store.listEvents({ limit: 1 })[0]?.id ?? 0;

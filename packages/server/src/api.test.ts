@@ -294,6 +294,43 @@ describe('通知', () => {
     const read = await c.send<{ unread: number }>('POST', '/api/notifications/read', { ids: [id1] });
     expect(read.body.unread).toBe(1);
   });
+
+  it('标已读后向所有在线客户端广播未读数（否则别的标签页角标不动）', async () => {
+    const c = await makeApp();
+    c.service.store.insertNotification({ kind: 'merge_failed', level: 'error', title: '合并失败', body: 'x' });
+    // 「标记已读」是阅读动作，不进 events 表，所以不能靠事件增量推送；
+    // 少了这条广播，手机点了已读、桌面端角标会一直停在旧数字。
+    await c.app.listen({ port: 0, host: '127.0.0.1' });
+    const address = c.app.server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+
+    const frame = await new Promise<string>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${String(port)}/api/ws`, {
+        headers: { cookie: `${SESSION_COOKIE}=${c.sid}` },
+      });
+      const timer = setTimeout(() => {
+        ws.terminate();
+        reject(new Error('3s 内没收到 notifications_read'));
+      }, 3_000);
+      ws.on('message', (data: Buffer) => {
+        const text = data.toString('utf8');
+        // hello 先到，标已读的通知消息在它之后
+        if (!text.includes('notifications_read')) return;
+        clearTimeout(timer);
+        ws.close();
+        resolve(text);
+      });
+      ws.on('open', () => {
+        void c.send('POST', '/api/notifications/read', { ids: [] });
+      });
+      ws.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+
+    expect(JSON.parse(frame)).toMatchObject({ type: 'notifications_read', unread: 0 });
+  });
 });
 
 describe('诊断与回放', () => {

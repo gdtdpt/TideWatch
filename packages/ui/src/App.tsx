@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { api, setUnauthorizedHandler } from './api.ts';
 import { Login } from './Login.tsx';
 import { Notifications } from './Notifications.tsx';
@@ -27,6 +27,15 @@ export function App(): ReactNode {
 
   const connected = useLive(() => setTick((t) => t + 1), auth === 'in');
 
+  // 角标数字的唯一来源。标记已读是用户主动操作、不产生 WS 事件，
+  // 所以通知面板会把接口返回的最新未读数回写进来（否则角标要等下一个事件才变）。
+  const refreshUnread = useCallback((): void => {
+    api
+      .get<{ unread: number }>('/api/notifications')
+      .then((r) => setUnread(r.unread))
+      .catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     setUnauthorizedHandler(() => setAuth('out'));
     api
@@ -38,17 +47,8 @@ export function App(): ReactNode {
 
   useEffect(() => {
     if (auth !== 'in') return;
-    let alive = true;
-    api
-      .get<{ unread: number }>('/api/notifications')
-      .then((r) => {
-        if (alive) setUnread(r.unread);
-      })
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [auth, tick]);
+    refreshUnread();
+  }, [auth, tick, refreshUnread]);
 
   if (auth === 'checking') {
     return <p className="p-8 text-center text-sm text-neutral-500">正在检查会话…</p>;
@@ -103,7 +103,10 @@ export function App(): ReactNode {
           <button
             className="hover:text-neutral-300"
             onClick={() => {
-              void api.post('/api/auth/logout').finally(() => setAuth('out'));
+              void api.post('/api/auth/logout').finally(() => {
+                setUnread(0);
+                setAuth('out');
+              });
             }}
           >
             退出登录
@@ -161,7 +164,14 @@ export function App(): ReactNode {
         </nav>
       </div>
 
-      {bell && <Notifications tick={tick} onClose={() => setBell(false)} onNavigate={nav} />}
+      {bell && (
+        <Notifications
+          tick={tick}
+          onClose={() => setBell(false)}
+          onNavigate={nav}
+          onUnreadChange={setUnread}
+        />
+      )}
     </div>
   );
 }
