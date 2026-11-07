@@ -6,7 +6,9 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     reporters: ['default'],
-    // 首例要冷启动 fastify + 插件注册，5s 默认值不够
-    testTimeout: 20_000,
+    // 每个测试文件是独立 worker：首例要付整个模块图的转译加载（实测 ~12s）
+    // 再加 buildApp（打开库 + 迁移 + 恢复扫描，~7s）。22 个文件并行时 CPU 争抢会把它顶到 20s 以上，
+    // 5s 默认值和 20s 都会偶发超时（表现为"改了一行文档，health 也说超时"）。
+    testTimeout: 40_000,
   },
 });
