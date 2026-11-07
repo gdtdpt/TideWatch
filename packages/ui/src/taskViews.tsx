@@ -10,10 +10,12 @@ import {
   END_REASON_LABEL,
   fmtTime,
   STATE_LABEL,
+  type MonitorWindow,
   type Task,
 } from './api.ts';
 import { Badge, Button, Card, ErrorText, Field, Input, Modal, Select, Toggle } from './components.tsx';
 import { useNow } from './hooks.ts';
+import { PlatformMark } from './platformMarks.tsx';
 
 export type Tone = 'ok' | 'warn' | 'error' | 'info' | 'neutral';
 
@@ -27,10 +29,81 @@ function fmtElapsed(seconds: number): string {
   return h > 0 ? `${String(h)}:${pad(m)}:${pad(s)}` : `${String(m)}:${pad(s)}`;
 }
 
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/**
+ * 新增时段的默认值：**接在最后一段结束之后两小时**。
+ *
+ * 不能每次都填死 `19:00 → 02:00`：已有时段时再点「添加」，新行和旧行一模一样，
+ * 界面上看起来"没变化"，用户会以为只有一段 —— 实际两段，删除时删掉自己改的那行，
+ * 剩下那条默认值，现象就是"删了以后变成 19:00→02:00，而且怎么删都还在"。
+ */
+function nextWindow(prev: MonitorWindow | undefined): MonitorWindow {
+  if (prev === undefined) return { start: '19:00', end: '02:00' };
+  const [h, m] = prev.end.split(':').map(Number);
+  const start = ((h ?? 0) * 60 + (m ?? 0)) % 1440;
+  const end = (start + 120) % 1440;
+  return { start: `${pad2(Math.floor(start / 60))}:${pad2(start % 60)}`, end: `${pad2(Math.floor(end / 60))}:${pad2(end % 60)}` };
+}
+
+/** 同一组起止 + 星期只保留一份；起止相同的半填状态直接丢弃 */
+function dedupeWindows(list: readonly MonitorWindow[]): MonitorWindow[] {
+  const seen = new Set<string>();
+  const out: MonitorWindow[] = [];
+  for (const w of list) {
+    if (w.start === w.end) continue;
+    const key = `${w.start}-${w.end}-${(w.days ?? []).join(',')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(w);
+  }
+  return out;
+}
+
+/** 比较用：不受对象 key 顺序影响 */
+const windowsKey = (list: readonly MonitorWindow[]): string =>
+  list.map((w) => `${w.start}-${w.end}-${(w.days ?? []).join(',')}`).join('|');
+
+/**
+ * 画质标记：**优先显示实际拿到的档位**，拿不到才退回请求值。
+ *
+ * 为什么不是直接显示 `task.quality`：那是"我要的"。平台会静默降级（请求原画、
+ * 只给高清，且不报错），只显示请求值等于把"糊了"这件事藏起来。
+ */
+export function qualityMark(task: Task, detail: string | null): { text: string; tone: string; title: string } | null {
+  const a = task.qualityActual;
+  if (a !== null && a.label !== null) {
+    // detail 里已经写了同样的档位（插件常给 "720p60 · 5.1 Mbps"），没降级就别重复一遍。
+    // 降级必须保留：detail 的档位说明不了"这是被降下来的"，`↓` 才是那句话。
+    if (!a.degraded && (detail ?? '').includes(a.label)) return null;
+    const extra = [a.codec?.toUpperCase(), a.format].filter((x): x is string => typeof x === 'string' && x.length > 0);
+    const suffix = extra.length > 0 ? `（${extra.join(' · ')}）` : '';
+    const title = a.degraded
+      ? `请求 ${a.requested ?? '—'}，平台实际只给了 ${a.label}${suffix}。常见原因：未登录、房间没有该档位、会员画质。`
+      : `实际画质 ${a.label}${suffix}`;
+    return {
+      text: a.degraded ? `${a.label} ↓` : a.label,
+      tone: a.degraded ? 'text-amber-400' : 'text-neutral-500',
+      title,
+    };
+  }
+  if (task.quality !== null && task.quality.length > 0 && !(detail ?? '').includes(task.quality)) {
+    return {
+      text: task.quality,
+      tone: 'text-neutral-600',
+      title: '任务设置里的请求档位；还没解析出实际画质',
+    };
+  }
+  return null;
+}
+
 export function stateTone(state: string): Tone {
   if (state === 'recording') return 'ok';
   if (state === 'reconnecting' || state === 'resolving' || state === 'finalizing') return 'info';
-  if (state === 'waiting' || state === 'snoozed' || state === 'idle') return 'neutral';
+  // 不在时段 / 已暂停不是错误：它们都是"按预期没在动"，涂红会让人以为出了事
+  if (state === 'waiting' || state === 'snoozed' || state === 'idle' || state === 'paused') return 'neutral';
+  // 平台拒绝进房也不是我们的故障，但需要人知道，用警告色
+  if (state === 'blocked') return 'warn';
   return 'error';
 }
 
@@ -49,10 +122,10 @@ export const TIER_LABEL: Record<Tier, string> = {
 export function taskTier(task: Task): Tier {
   const state = task.runtime.state;
   if (state === 'recording' || state === 'reconnecting' || state === 'finalizing') return 'recording';
-  if (state === 'error' || state === 'needs_auth' || state === 'needs_dep' || state === 'unsupported') {
+  if (state === 'error' || state === 'needs_auth' || state === 'needs_dep' || state === 'unsupported' || state === 'blocked') {
     return 'attention';
   }
-  if (!task.monitorEnabled || state === 'idle') return 'paused';
+  if (!task.monitorEnabled || state === 'idle' || state === 'paused') return 'paused';
   return 'monitoring';
 }
 
@@ -143,7 +216,18 @@ export function TaskRow({
 
   const runtime = task.runtime;
   const recording = runtime.state === 'recording' || runtime.state === 'reconnecting';
-  const elapsed = recording ? (now - new Date(runtime.updatedAt).getTime()) / 1000 : 0;
+
+  /**
+   * 卡片上的时长是**本场累计**，不是当前分段。
+   *
+   * 基准取"进行中会话的起点"：`runtime.updatedAt` 会在建连接、段轮转、重连时被重写，
+   * 用它算等于每小时切段、每次断流都归零（标着"本场已录"却显示 00:12）。
+   * 刚开录的那一两秒列表可能还停在上一场，此时退回投影时间兜底，等轮询刷到就纠正。
+   */
+  const latest = task.latestSession;
+  const liveStartMs =
+    recording && latest !== null && latest.endedAt === null ? new Date(latest.startedAt).getTime() : null;
+  const elapsed = recording ? (now - (liveStartMs ?? new Date(runtime.updatedAt).getTime())) / 1000 : 0;
 
   const act = async (fn: () => Promise<unknown>): Promise<void> => {
     setBusy(true);
@@ -165,10 +249,8 @@ export function TaskRow({
   const marks: string[] = [];
   if (!task.monitorEnabled && runtime.state !== 'idle') marks.push('未监控');
   if (task.recordRequested && !recording) marks.push('下轮将录');
-  // 插件的 detail 常常自带画质（"1080p60 · 12.4 Mbps"），别在同一行重复一遍
-  if (task.quality !== null && !(runtime.detail ?? '').includes(task.quality)) marks.push(task.quality);
-
-  const latest = task.latestSession;
+  // 画质单独渲染：降级要用琥珀色标出来，和普通标记拼在一个字符串里做不到
+  const quality = qualityMark(task, runtime.detail);
 
   return (
     <li
@@ -178,12 +260,17 @@ export function TaskRow({
     >
       <div className="flex min-w-0 items-center gap-2">
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          {/* 平台标识放在状态徽章前面：先认出"哪来的"，再看"什么状态" */}
+          <PlatformMark platform={task.platform} />
           <Badge tone={stateTone(runtime.state)}>{STATE_LABEL[runtime.state] ?? runtime.state}</Badge>
           <span className="truncate text-sm font-medium" title={task.streamerName ?? task.url}>
             {task.streamerName ?? '未命名直播间'}
           </span>
           {recording && elapsed > 0 && (
-            <span className="shrink-0 text-[10px] tabular-nums text-emerald-400" title="本场已录">
+            <span
+              className="shrink-0 text-[10px] tabular-nums text-emerald-400"
+              title="本场已录（跨分段累计，切段和重连都不归零）"
+            >
               {fmtElapsed(elapsed)}
             </span>
           )}
@@ -213,6 +300,11 @@ export function TaskRow({
             '还没录过'
           )}
         </span>
+        {quality !== null && (
+          <span className={`shrink-0 whitespace-nowrap ${quality.tone}`} title={quality.title}>
+            · {quality.text}
+          </span>
+        )}
         {marks.length > 0 && <span className="shrink-0 text-neutral-600">· {marks.join(' · ')}</span>}
       </div>
 
@@ -292,20 +384,31 @@ export function TaskEditor({
   const [postprocess, setPostprocess] = useState(task.postprocess);
   const [maxSessionS, setMaxSessionS] = useState(task.maxSessionS);
   const [maxSessionBytes, setMaxSessionBytes] = useState(Math.round(task.maxSessionBytes / 1024 ** 2));
+  const [windows, setWindows] = useState<MonitorWindow[]>(task.monitorWindows);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const save = async (): Promise<void> => {
     setBusy(true);
     setError(null);
+    /**
+     * 只提交**改动过**的字段。
+     *
+     * 以前整张表单一把梭：只要有一个输入框不合法（把分段时长清空了就是 0），
+     * 后端整体 400，同一弹窗里删掉的时段也跟着回滚 —— 用户看到的是"删了保存，
+     * 重开又回来"，而红字在最底部，很容易以为删除按钮坏了。
+     */
+    const next: Record<string, unknown> = {};
+    if (quality !== (task.quality ?? '')) next['quality'] = quality;
+    if (segmentTimeS !== task.segmentTimeS) next['segmentTimeS'] = segmentTimeS;
+    if (postprocess !== task.postprocess) next['postprocess'] = postprocess;
+    if (maxSessionS !== task.maxSessionS) next['maxSessionS'] = maxSessionS;
+    const nextBytes = maxSessionBytes * 1024 ** 2;
+    if (nextBytes !== task.maxSessionBytes) next['maxSessionBytes'] = nextBytes;
+    const windowsNext = dedupeWindows(windows);
+    if (windowsKey(windowsNext) !== windowsKey(task.monitorWindows)) next['monitorWindows'] = windowsNext;
     try {
-      await api.patch(`/api/tasks/${task.id}`, {
-        quality,
-        segmentTimeS,
-        postprocess,
-        maxSessionS,
-        maxSessionBytes: maxSessionBytes * 1024 ** 2,
-      });
+      if (Object.keys(next).length > 0) await api.patch(`/api/tasks/${task.id}`, next);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -338,6 +441,106 @@ export function TaskEditor({
           hint={task.qualityOptions.length > 0 ? `可选：${task.qualityOptions.join(' / ')}` : '该房间还没解析出可选档位'}
         >
           <Input value={quality} onChange={(e) => setQuality(e.target.value)} placeholder="原画 / OD / 留空用平台默认" />
+        </Field>
+        {task.qualityActual !== null && (
+          <p className={`-mt-1 text-[11px] ${task.qualityActual.degraded ? 'text-amber-400' : 'text-neutral-500'}`}>
+            上次实际：
+            {task.qualityActual.label ?? '未知档位'}
+            {task.qualityActual.codec !== null ? ` · ${task.qualityActual.codec.toUpperCase()}` : ''}
+            {task.qualityActual.format !== null ? ` · ${task.qualityActual.format}` : ''}
+            {task.qualityActual.degraded ? `（低于请求的 ${task.qualityActual.requested ?? '默认'}）` : ''}
+          </p>
+        )}
+        <Field
+          as="div"
+          label="监控时段"
+          hint={
+            windows.length === 0
+              ? '全天监控（按设置里的轮询间隔）。填上时段后，窗外一次请求都不发。'
+              : '按服务所在机器的本地时间；跨午夜直接写（19:00 → 02:00）。窗外一次请求都不发。'
+          }
+        >
+          <div className="space-y-2">
+            {/*
+              「全天」做成原生勾选框而不是"把行删光"的隐含状态：
+              删光等于全天这件事只有我们俩知道，用户看到的是"删了还在"。
+              勾选框包在自己的 label 里（不嵌套按钮），各家浏览器都不会吞点击。
+            */}
+            <label className="flex items-center gap-2 text-xs text-neutral-300">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 accent-sky-500"
+                checked={windows.length === 0}
+                onChange={(e) => setWindows(e.target.checked ? [] : [nextWindow(undefined)])}
+              />
+              全天监控（不限时段）
+            </label>
+            {windows.map((w, i) => (
+              <div key={`w${String(i)}`} className="flex min-w-0 items-center gap-1.5">
+                {/* 宽度放在外层：Input 自带 w-full，直接给它 w-24 会被 w-full 盖掉 */}
+                <div className="w-24 shrink-0">
+                  <Input
+                    type="time"
+                    aria-label={`第 ${String(i + 1)} 段开始时间`}
+                    value={w.start}
+                    onChange={(e) =>
+                      setWindows(windows.map((x, j) => (j === i ? { ...x, start: e.target.value.slice(0, 5) } : x)))
+                    }
+                  />
+                </div>
+                {/* 跨午夜优先用箭头颜色提示：窄屏放不下"· 跨午夜"时文字会被截成省略号 */}
+                <span
+                  className={`shrink-0 text-xs ${w.end < w.start ? 'text-amber-400' : 'text-neutral-500'}`}
+                  title={w.end < w.start ? '跨午夜：当晚开始，次日凌晨结束' : undefined}
+                >
+                  →
+                </span>
+                <div className="w-24 shrink-0">
+                  <Input
+                    type="time"
+                    aria-label={`第 ${String(i + 1)} 段结束时间`}
+                    value={w.end}
+                    onChange={(e) =>
+                      setWindows(windows.map((x, j) => (j === i ? { ...x, end: e.target.value.slice(0, 5) } : x)))
+                    }
+                  />
+                </div>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-600">
+                  {`第 ${String(i + 1)} 段`}
+                  {w.end < w.start ? <span className="hidden sm:inline"> · 跨午夜</span> : null}
+                </span>
+                <Button
+                  variant="ghost"
+                  className="shrink-0 px-2.5 py-1 text-xs"
+                  title={`删除第 ${String(i + 1)} 段`}
+                  onClick={() => setWindows(windows.filter((_x, j) => j !== i))}
+                >
+                  删除
+                </Button>
+              </div>
+            ))}
+            <div className="flex flex-wrap items-center gap-2">
+              {windows.length < 3 && (
+                <Button
+                  variant="subtle"
+                  className="px-2 py-0.5 text-xs"
+                  onClick={() => setWindows([...windows, nextWindow(windows[windows.length - 1])])}
+                >
+                  + 添加时段
+                </Button>
+              )}
+              {windows.length > 0 && (
+                <Button
+                  variant="ghost"
+                  className="px-2 py-0.5 text-xs"
+                  title="删掉所有时段，恢复全天监控"
+                  onClick={() => setWindows([])}
+                >
+                  清空所有时段
+                </Button>
+              )}
+            </div>
+          </div>
         </Field>
         <Field label="分段时长（秒）" hint="下一次开录生效；30..43200">
           <Input

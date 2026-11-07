@@ -47,6 +47,16 @@ rl.on('line', (line) => {
       title: '假直播',
       http_headers: { Referer: 'https://example.com/' },
       quality_options: ['origin', '720p'],
+      // 只有这个地址回"实际画质"：另一个地址用来验"插件不回时宿主不猜"
+      ...(String(req.url).includes('degraded')
+        ? {
+            quality_options: ['原画', '高清'],
+            quality_actual: {
+              qn: 150, label: '高清', codec: 'avc', format: 'flv',
+              requested: '原画', degraded: true,
+            },
+          }
+        : {}),
       cookies_out: 'fresh-cookie',
     });
     return;
@@ -169,6 +179,30 @@ describe('插件发现与解析（真实子进程）', () => {
     // 插件刷新的 cookie 自动回写，下一次 resolve 能拿到
     expect(rig.credentials.get('cookie:fake')).toBe('fresh-cookie');
     expect(rig.store.listEvents({ limit: 20 }).map((e) => e.kind)).toContain('plugin.cookies_updated');
+    rig.store.close();
+  });
+
+  it('quality_actual 映射成结构化的"实际画质"；插件不回时不猜', async () => {
+    const rig = await makeRig();
+    const degraded = rig.store.addTask({ url: 'https://example.com/live/degraded', platform: 'fake' });
+    const got = await rig.resolver.resolve(degraded);
+    expect(got.ok).toBe(true);
+    if (!got.ok) return;
+    // 请求原画、实际高清：这正是"平台静默降级"的形状，必须原样传上去
+    expect(got.data.qualityActual).toEqual({
+      qn: 150,
+      label: '高清',
+      codec: 'avc',
+      format: 'flv',
+      requested: '原画',
+      degraded: true,
+    });
+
+    const plain = rig.store.addTask({ url: 'https://example.com/live/plain', platform: 'fake' });
+    const none = await rig.resolver.resolve(plain);
+    expect(none.ok).toBe(true);
+    if (!none.ok) return;
+    expect(none.data.qualityActual).toBeNull();
     rig.store.close();
   });
 

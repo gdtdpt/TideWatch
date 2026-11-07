@@ -12,6 +12,7 @@ import {
 import { Badge, Button, Card, Empty, PageHeader } from '../components.tsx';
 import { useAsync } from '../hooks.ts';
 import { AddTaskCard, TaskEditor, TaskList, sortTasks } from '../taskViews.tsx';
+import { PlatformMark } from '../platformMarks.tsx';
 
 /** 总览只放"一眼要看到的东西"：状态、入口、最近几条。全量在「任务」页。 */
 const PREVIEW_COUNT = 6;
@@ -20,7 +21,7 @@ const RECENT_COUNT = 6;
 export function Overview({ tick, navigate }: { tick: number; navigate: (path: string) => void }): ReactNode {
   const health = useAsync<Health>(() => api.get('/api/health'), [tick]);
   const tasks = useAsync<{ tasks: Task[] }>(() => api.get('/api/tasks'), [tick]);
-  const sessions = useAsync<{ sessions: (Session & { streamerName: string | null })[] }>(
+  const sessions = useAsync<{ sessions: (Session & { streamerName: string | null; platform?: string | null })[] }>(
     () => api.get('/api/sessions?limit=20'),
     [tick],
   );
@@ -29,6 +30,8 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
 
   const all = tasks.data?.tasks ?? [];
   const sorted = sortTasks(all);
+  // 旧进程的 /api/sessions 不带 platform，按 taskId 回查，免得整列显示"未知平台"
+  const platformByTask = new Map(all.map((t) => [t.id, t.platform]));
   const preview = sorted.slice(0, PREVIEW_COUNT);
   // 刚添加/重复的那条如果排在 6 条之外，临时提到最前面 —— 否则提示"已为你标出来"却看不见
   if (highlight !== null && !preview.some((t) => t.id === highlight)) {
@@ -111,9 +114,13 @@ export function Overview({ tick, navigate }: { tick: number; navigate: (path: st
           <ul className="divide-y divide-neutral-800 text-sm">
             {sessions.data.sessions.slice(0, RECENT_COUNT).map((s) => (
               <li key={s.id} className="flex items-center justify-between gap-3 py-2">
-                <button className="min-w-0 text-left hover:text-sky-300" onClick={() => navigate(`session/${s.id}`)}>
+                <button
+                  className="flex min-w-0 items-center gap-1.5 text-left hover:text-sky-300"
+                  onClick={() => navigate(`session/${s.id}`)}
+                >
+                  <PlatformMark platform={s.platform ?? platformByTask.get(s.taskId) ?? null} />
                   <span className="truncate">{s.streamerName ?? s.taskId.slice(0, 8)}</span>
-                  <span className="ml-2 text-xs text-neutral-500">{fmtTime(s.startedAt)}</span>
+                  <span className="shrink-0 text-xs text-neutral-500">{fmtTime(s.startedAt)}</span>
                 </button>
                 <Badge tone={s.endReason === 'capped' ? 'info' : s.endReason === null ? 'ok' : 'neutral'}>
                   {s.endReason === null ? '录制中' : (END_REASON_LABEL[s.endReason] ?? s.endReason)}

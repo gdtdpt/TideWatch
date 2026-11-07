@@ -171,17 +171,20 @@ export function useLive(onEvent: () => void, enabled = true): LiveState {
 export type Route =
   | { page: 'overview' }
   | { page: 'tasks' }
-  | { page: 'recordings' }
+  /** `preselect` = 从会话详情点「加入合并」跳过来时要预选的那一场 */
+  | { page: 'recordings'; preselect?: string }
   | { page: 'session'; id: string }
+  | { page: 'merge'; id: string }
   | { page: 'settings' };
 
 export function parseRoute(hash: string): Route {
   const clean = hash.replace(/^#\/?/, '');
   const [head, id] = clean.split('/');
   if (head === 'tasks') return { page: 'tasks' };
-  if (head === 'recordings') return { page: 'recordings' };
+  if (head === 'recordings') return id !== undefined && id.length > 0 ? { page: 'recordings', preselect: id } : { page: 'recordings' };
   if (head === 'settings') return { page: 'settings' };
   if (head === 'session' && id !== undefined && id.length > 0) return { page: 'session', id };
+  if (head === 'merge' && id !== undefined && id.length > 0) return { page: 'merge', id };
   return { page: 'overview' };
 }
 

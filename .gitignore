@@ -6,6 +6,8 @@ coverage/
 # 运行时数据根（默认与程序同层，见 docs/11 的设计沿用）
 data/
 *.log
+# nohup 后台启动 daemon 时落在仓库根的日志
+nohup.out
 
 .DS_Store
 .env

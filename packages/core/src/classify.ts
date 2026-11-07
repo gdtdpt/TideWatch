@@ -82,13 +82,13 @@ export const FAIL_STREAK_LIMIT = 5;
 export const URL_LESS_FAST_ROUNDS = 6;
 export const URL_LESS_FAST_DELAY_MS = 5_000;
 
-export type ResolveFaultKind = 'needs_auth' | 'needs_dep' | 'unsupported' | 'other';
+export type ResolveFaultKind = 'needs_auth' | 'needs_dep' | 'unsupported' | 'not_live' | 'restricted' | 'other';
 
 export interface ResolveFault {
   kind: ResolveFaultKind;
   /** 是否需要"人去办一件事"（换状态 + 专用事件 + 退避一轮） */
   needsAction: boolean;
-  state: 'needs_auth' | 'needs_dep' | 'unsupported' | 'error';
+  state: 'needs_auth' | 'needs_dep' | 'unsupported' | 'waiting' | 'blocked' | 'error';
   eventKind: string;
 }
 
@@ -105,6 +105,14 @@ export function resolveFault(code: PluginErrorCode | 'TIMEOUT'): ResolveFault {
         state: 'unsupported',
         eventKind: 'plugin.unsupported_platform',
       };
+    // 主播没开播：这是**正常状态**，不是故障。抖音下播时抛异常而不是返回空数据，
+    // 兜底成 error 会让下播期间每 30 秒记一条"出错"（2026-11-04 实测 61 条）。
+    case 'NOT_LIVE':
+      return { kind: 'not_live', needsAction: false, state: 'waiting', eventKind: 'plugin.not_live' };
+    // 平台拒绝进房（观看范围 / 付费直播）：除非用户去登录、加粉丝团，否则看不到。
+    // 状态与 error 分开，UI 才能说清"为什么录不了"，退避也走半小时一档。
+    case 'RESTRICTED':
+      return { kind: 'restricted', needsAction: true, state: 'blocked', eventKind: 'plugin.restricted' };
     default:
       return { kind: 'other', needsAction: false, state: 'error', eventKind: 'plugin.resolve_err' };
   }

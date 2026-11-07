@@ -362,7 +362,86 @@ export function Settings({ tick }: { tick: number }): ReactNode {
           </Button>
         </div>
       </Card>
+
+      <RetentionCard />
     </div>
+  );
+}
+
+interface RetentionInfo {
+  policy: { processDays: number; resultDays: number };
+  events: { total: number; process: number; result: number; oldestAt: string | null; newestAt: string | null };
+  dbBytes: number;
+  freePages: number;
+  archive: { dir: string; files: number; bytes: number; newestAt: string | null };
+  lastRun: {
+    deleted: { process: number; result: number };
+    archived: { process: number; result: number };
+    files: string[];
+    error: string | null;
+    sizeBytes: number;
+  } | null;
+}
+
+const day = (iso: string | null): string => (iso === null ? '—' : iso.slice(0, 10));
+
+/**
+ * 数据保留卡片。
+ *
+ * 出现在这里而不是"运维文档里"的理由：用户唯一能判断"库会不会撑爆"的地方
+ * 就是这一屏 —— 条数、库大小、上次归档结果必须能被自己看见，而不是靠猜。
+ */
+function RetentionCard(): ReactNode {
+  const info = useAsync<RetentionInfo>(() => api.get('/api/retention'), []);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const r = await api.post<{ summary: string; error: string | null }>('/api/retention/run');
+      setNote(r.error === null ? r.summary : `${r.summary}；但有失败：${r.error}`);
+      info.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const d = info.data;
+  return (
+    <Card title="数据保留">
+      <dl className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+        <Row k="事件条数" v={d === null ? '—' : `${String(d.events.total)}（过程 ${String(d.events.process)} / 结果 ${String(d.events.result)}）`} />
+        <Row k="最早事件" v={d === null ? '—' : day(d.events.oldestAt)} />
+        <Row k="数据库" v={d === null ? '—' : fmtBytes(d.dbBytes)} />
+        <Row k="归档文件" v={d === null ? '—' : `${String(d.archive.files)} 个 · ${fmtBytes(d.archive.bytes)}`} />
+        <Row k="保留期" v={d === null ? '—' : `过程 ${String(d.policy.processDays)} 天 / 结果 ${String(d.policy.resultDays)} 天`} />
+        <Row
+          k="上次归档"
+          v={
+            d === null || d.lastRun === null
+              ? '还没跑过'
+              : `${String(d.lastRun.deleted.process + d.lastRun.deleted.result)} 条 · 库 ${fmtBytes(d.lastRun.sizeBytes)}`
+          }
+        />
+      </dl>
+      <p className="mt-2 text-[11px] leading-relaxed text-neutral-500">
+        过程事件（状态变化、逐行 stderr）只看最近几天，过期先归档成 gzip 再删除；结果事件（开录/收尾/合并/恢复）留得更久。
+        删除不缩文件，空出来的页会被新事件复用，所以库大小会稳定下来 —— 真要缩，先 stop 再跑 <code>tidewatch compact</code>。
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button variant="ghost" disabled={busy} onClick={() => void run()}>
+          {busy ? '归档中…' : '立即归档'}
+        </Button>
+        {note !== null && <span className="text-[11px] text-neutral-400">{note}</span>}
+        {error !== null && <ErrorText>{error}</ErrorText>}
+      </div>
+    </Card>
   );
 }
 

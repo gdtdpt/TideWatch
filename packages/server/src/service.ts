@@ -9,6 +9,7 @@ import {
   Engine,
   PostProcessor,
   runRecovery,
+  SessionMerger,
   type CapturePort,
   type EngineFs,
   type RecoverySummary,
@@ -16,7 +17,16 @@ import {
 import type { HostAdapter } from '@tidewatch/host-adapter';
 import { channelsFromConfig, NotificationDispatcher, type Channel, type Notification as NotifyPayload } from '@tidewatch/notify';
 import { PluginHost } from '@tidewatch/protocol';
-import { Store, type AppSettings, type NotificationRow } from '@tidewatch/store';
+import {
+  archiveStats,
+  DEFAULT_RETENTION,
+  runRetention,
+  Store,
+  type AppSettings,
+  type NotificationRow,
+  type RetentionPolicy,
+  type RetentionResult,
+} from '@tidewatch/store';
 import { FfmpegCapture } from './capture.ts';
 import { NodeEngineFs } from './fs.ts';
 import { PluginManager } from './plugins.ts';
@@ -102,10 +112,15 @@ export class TidewatchService {
   readonly resolver: PluginResolver;
   readonly engine: Engine;
   readonly post: PostProcessor;
+  readonly merger: SessionMerger;
   readonly outputRoot: string;
   #dispatcher: NotificationDispatcher;
   #status: ServiceStatus;
   #started = false;
+  /** 事件保留：过程事件 7 天、结果事件 90 天（策略常量在 store/events.ts） */
+  readonly retentionPolicy: RetentionPolicy = DEFAULT_RETENTION;
+  #retentionTimers: NodeJS.Timeout[] = [];
+  #lastRetention: RetentionResult | null = null;
 
   constructor(readonly opts: ServiceOptions) {
     mkdirSyncSafe(opts.dataRoot);
@@ -184,6 +199,21 @@ export class TidewatchService {
     });
 
     this.post = new PostProcessor({
+      store: this.store,
+      fs: this.fs,
+      capture: this.capture,
+      probe: this.probe,
+      onDraft: (draft, ctx) => {
+        void this.#dispatcher.dispatch({
+          ...draft,
+          taskId: ctx.taskId,
+          sessionId: ctx.sessionId,
+        });
+      },
+      ...(opts.logger === undefined ? {} : { logger: opts.logger }),
+    });
+
+    this.merger = new SessionMerger({
       store: this.store,
       fs: this.fs,
       capture: this.capture,
@@ -312,13 +342,77 @@ export class TidewatchService {
       ...(this.opts.logger === undefined ? {} : { logger: this.opts.logger }),
     });
 
+    // 上次进程死在合并中途：ffmpeg 子进程已随监督器回收，这行不会再有人更新。
+    // 标成失败并说清楚"可以重试"，好过界面永远转圈。
+    for (const job of this.store.listUnfinishedMergeJobs()) {
+      this.store.updateMergeJob(job.id, {
+        status: 'failed',
+        message: '服务重启，合并中断（源分段未动，可重试）',
+        endedAt: new Date().toISOString(),
+      });
+    }
+
     if (lease.acquired && this.opts.engine !== false) {
       this.engine.start();
       this.#started = true;
     }
+
+    if (lease.acquired) this.#scheduleRetention();
+  }
+
+  /**
+   * 归档巡检：启动一分钟后再跑（别和恢复扫描抢同一块 IO），之后每 6 小时一次。
+   * 每轮只删自己那一批（maxBatches 封顶），删不完留给下一轮 —— 宁可慢，不要卡住录制。
+   */
+  #scheduleRetention(): void {
+    const first = setTimeout(() => {
+      void this.runRetention().catch((err: unknown) => this.opts.logger?.warn('事件保留巡检失败', err));
+    }, 60_000);
+    first.unref();
+    const every = setInterval(
+      () => {
+        void this.runRetention().catch((err: unknown) => this.opts.logger?.warn('事件保留巡检失败', err));
+      },
+      6 * 60 * 60 * 1000,
+    );
+    every.unref();
+    this.#retentionTimers = [first, every];
+  }
+
+  /** 归档 + 删除过期事件。返回本次结果，UI 的"立即归档"和 CLI 走的都是这里。 */
+  async runRetention(): Promise<RetentionResult> {
+    const result = await runRetention({
+      store: this.store,
+      archiveDir: join(this.opts.dataRoot, 'events'),
+      policy: this.retentionPolicy,
+      ...(this.opts.logger === undefined ? {} : { logger: this.opts.logger }),
+    });
+    this.#lastRetention = result;
+    return result;
+  }
+
+  /** 设置页的"数据保留"卡片要的全部数字（一次查完，别让 UI 连打三个接口） */
+  get retentionInfo(): {
+    policy: RetentionPolicy;
+    events: ReturnType<Store['eventsInfo']>;
+    dbBytes: number;
+    freePages: number;
+    archive: ReturnType<typeof archiveStats>;
+    lastRun: RetentionResult | null;
+  } {
+    return {
+      policy: this.retentionPolicy,
+      events: this.store.eventsInfo(),
+      dbBytes: this.store.dbSizeBytes(),
+      freePages: this.store.freePages(),
+      archive: archiveStats(join(this.opts.dataRoot, 'events')),
+      lastRun: this.#lastRetention,
+    };
   }
 
   async stop(): Promise<void> {
+    for (const timer of this.#retentionTimers) clearTimeout(timer);
+    this.#retentionTimers = [];
     if (this.#started) {
       await this.engine.stop();
       this.#started = false;

@@ -154,6 +154,39 @@ describe('任务控制面', () => {
     expect(c.service.store.getTask(task.id)?.postprocess).toBe('per_segment');
   });
 
+  it('监控时段：合法段落库、脏段 400、空数组恢复全天', async () => {
+    const c = await makeApp();
+    const task = c.service.store.addTask({ url: 'https://live.douyin.com/4', platform: 'douyin', monitorEnabled: true });
+
+    // 新任务默认全天（空数组），老库升级后行为不变
+    expect(c.service.store.getTask(task.id)?.monitorWindows).toEqual([]);
+
+    const ok = await c.send<{ task: { monitorWindows: { start: string; end: string }[] } }>(
+      'PATCH',
+      `/api/tasks/${task.id}`,
+      { monitorWindows: [{ start: '19:00', end: '02:00' }, { start: '12:00', end: '13:30' }] },
+    );
+    expect(ok.statusCode).toBe(200);
+    expect(ok.body.task.monitorWindows).toHaveLength(2);
+    expect(ok.body.task.monitorWindows[0]).toEqual({ start: '19:00', end: '02:00' });
+
+    // 起止相同 = 没填完 → 400（而不是静默存成"永不监控"）
+    expect(
+      (await c.send('PATCH', `/api/tasks/${task.id}`, { monitorWindows: [{ start: '08:00', end: '08:00' }] })).statusCode,
+    ).toBe(400);
+    expect(
+      (await c.send('PATCH', `/api/tasks/${task.id}`, { monitorWindows: [{ start: '25:00', end: '26:00' }] })).statusCode,
+    ).toBe(400);
+    expect((await c.send('PATCH', `/api/tasks/${task.id}`, { monitorWindows: 'nope' })).statusCode).toBe(400);
+
+    // 空数组 = 恢复全天
+    const reset = await c.send<{ task: { monitorWindows: unknown[] } }>('PATCH', `/api/tasks/${task.id}`, {
+      monitorWindows: [],
+    });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.body.task.monitorWindows).toEqual([]);
+  });
+
   it('删除任务会级联删除会话索引（磁盘文件保留）—— 已知行为，UI 必须提前告知', async () => {
     const c = await makeApp();
     const task = c.service.store.addTask({ url: 'https://live.douyin.com/3', platform: 'douyin' });
@@ -242,6 +275,76 @@ describe('会话与事件', () => {
 
     const res = await c.get<{ events: { id: number; kind: string }[] }>(`/api/events?since=${String(first)}`);
     expect(res.body.events.map((e) => e.kind)).toEqual(['c']);
+  });
+});
+
+describe('跨会话合并', () => {
+  /** 造一场已结束的会话 */
+  function session(c: Ctx, hour: number, ended = true): string {
+    const task =
+      c.service.store.listTasks()[0] ??
+      c.service.store.addTask({ url: 'https://live.bilibili.com/1', platform: 'bilibili', streamerName: '主播A' });
+    const id = c.service.store.createSession({
+      taskId: task.id,
+      startedAt: new Date(2026, 10, 1, hour, 0, 0).toISOString(),
+      outputDir: `/out/s${String(hour)}`,
+      origin: 'new',
+    });
+    if (ended) c.service.store.endSession(id, 'offline', new Date(2026, 10, 1, hour, 30, 0).toISOString());
+    return id;
+  }
+
+  it('参数与状态校验：少于两场 400、不存在 404、还在录 409', async () => {
+    const c = await makeApp();
+    const a = session(c, 20);
+    const b = session(c, 21);
+    const open = session(c, 22, false);
+
+    expect((await c.send('POST', '/api/merges', { sessionIds: [a] })).statusCode).toBe(400);
+    expect((await c.send('POST', '/api/merges', { sessionIds: 'abc' })).statusCode).toBe(400);
+    expect((await c.send('POST', '/api/merges', { sessionIds: [a, 'nope'] })).statusCode).toBe(404);
+    const rejected = await c.send<{ error: string }>('POST', '/api/merges', { sessionIds: [a, open] });
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.body.error).toBe('session-open');
+
+    // 被拒的请求不留垃圾任务行
+    expect(c.service.store.listMergeJobs()).toHaveLength(0);
+
+    const ok = await c.send<{ job: { id: string; sessionIds: string[]; status: string } }>('POST', '/api/merges', {
+      // 逆序提交：受理后必须按开始时间排
+      sessionIds: [b, a],
+    });
+    expect(ok.statusCode).toBe(202);
+    expect(ok.body.job.sessionIds).toEqual([a, b]);
+    expect(ok.body.job.status).toBe('queued');
+  });
+
+  it('受理后异步执行，明细带源会话；没有分段 → skipped 而不是永远"合并中"', async () => {
+    const c = await makeApp();
+    const a = session(c, 20);
+    const b = session(c, 21);
+    const created = await c.send<{ job: { id: string } }>('POST', '/api/merges', { sessionIds: [a, b] });
+    const id = created.body.job.id;
+
+    // 轮询到终态：源分段不存在 → 立刻 skipped
+    let status = 'queued';
+    for (let i = 0; i < 100 && (status === 'queued' || status === 'running'); i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+      status = c.service.store.getMergeJob(id)?.status ?? 'missing';
+    }
+    expect(status).toBe('skipped');
+
+    const detail = await c.get<{ merge: { status: string }; sources: { id: string; missing: boolean }[] }>(
+      `/api/merges/${id}`,
+    );
+    expect(detail.statusCode).toBe(200);
+    expect(detail.body.merge.status).toBe('skipped');
+    expect(detail.body.sources.map((s) => s.id)).toEqual([a, b]);
+    expect(detail.body.sources.every((s) => !s.missing)).toBe(true);
+
+    expect((await c.get('/api/merges/does-not-exist')).statusCode).toBe(404);
+    const list = await c.get<{ merges: { id: string }[] }>('/api/merges');
+    expect(list.body.merges[0]?.id).toBe(id);
   });
 });
 
@@ -468,5 +571,70 @@ describe('SSE 事件流（主通道）', () => {
     await until('event: event');
     expect(buf).toMatch(/id: \d+\nevent: event/);
     await reader.cancel();
+  });
+});
+
+describe('事件归档与保留', () => {
+  it('会话时间线不再被"最新 1000 条"窗口挤空', async () => {
+    const c = await makeApp();
+    const task = c.service.store.addTask({ url: 'https://live.douyin.com/9', platform: 'douyin', streamerName: '老会话' });
+    const sessionId = c.service.store.createSession({
+      taskId: task.id,
+      startedAt: new Date().toISOString(),
+      outputDir: '/out/老会话/1',
+      origin: 'new',
+    });
+    c.service.store.insertEvent({ kind: 'recording.gap', payload: { after_part: 1 }, sessionId });
+    // 之后又发生了 1500 条无关事件（一次升级前，这会让它彻底看不见）
+    for (let i = 0; i < 1500; i += 1) c.service.store.insertEvent({ kind: 'task.state_changed', taskId: task.id });
+
+    const res = await c.get<{ events: { kind: string }[] }>(`/api/sessions/${sessionId}/events`);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.events.map((e) => e.kind)).toEqual(['recording.gap']);
+  });
+
+  it('立即归档：过期过程事件进 gzip 后删除，结果事件留着', async () => {
+    const c = await makeApp();
+    // 启动时恢复扫描自己会写一条 recovery.done，所以断言用增量而不是绝对值
+    const base = c.service.store.eventsInfo();
+    const old = new Date(Date.now() - 40 * 24 * 3600 * 1000).toISOString();
+    const processId = c.service.store.insertEvent({ kind: 'task.state_changed', payload: { state: 'waiting' } });
+    const resultId = c.service.store.insertEvent({ kind: 'session.ended', payload: { reason: 'offline' } });
+    c.service.store.db.prepare('UPDATE events SET ts = ? WHERE id IN (?, ?)').run(old, processId, resultId);
+
+    const before = await c.get<{
+      policy: { processDays: number; resultDays: number };
+      events: { total: number; process: number; result: number };
+      archive: { files: number };
+      dbBytes: number;
+    }>('/api/retention');
+    expect(before.body.policy).toEqual({ processDays: 7, resultDays: 90 });
+    expect(before.body.events).toMatchObject({
+      total: base.total + 2,
+      process: base.process + 1,
+      result: base.result + 1,
+    });
+    expect(before.body.dbBytes).toBeGreaterThan(0);
+
+    const run = await c.send<{ deleted: { process: number; result: number }; files: string[]; summary: string }>(
+      'POST',
+      '/api/retention/run',
+    );
+    expect(run.statusCode).toBe(200);
+    // 40 天前的过程事件删掉；结果事件还没到 90 天，不动
+    expect(run.body.deleted).toEqual({ process: 1, result: 0 });
+    expect(run.body.files).toHaveLength(1);
+    expect(run.body.summary).toContain('1 条');
+
+    const after = await c.get<{ events: { total: number; process: number; result: number }; archive: { files: number; bytes: number } }>(
+      '/api/retention',
+    );
+    expect(after.body.events).toMatchObject({
+      total: base.total + 1,
+      process: base.process,
+      result: base.result + 1,
+    });
+    expect(after.body.archive.files).toBe(1);
+    expect(after.body.archive.bytes).toBeGreaterThan(0);
   });
 });

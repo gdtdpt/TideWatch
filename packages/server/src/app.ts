@@ -16,6 +16,7 @@ import type { WebSocket } from 'ws';
 import { createHostAdapter, type HostAdapter } from '@tidewatch/host-adapter';
 import type { NotificationRow } from '@tidewatch/store';
 import { registerAuth } from './auth.ts';
+import { registerMergeRoutes } from './routes/merges.ts';
 import { registerSessionRoutes } from './routes/sessions.ts';
 import { registerSettingsRoutes } from './routes/settings.ts';
 import { registerSystemRoutes } from './routes/system.ts';
@@ -126,6 +127,7 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
 
   registerTaskRoutes(app, service);
   registerSessionRoutes(app, service);
+  registerMergeRoutes(app, service);
   registerSettingsRoutes(app, service);
   registerSystemRoutes(app, service, {
     // 在别的标签页/手机上点了已读，角标要跟着变；这条消息不进 events 表，

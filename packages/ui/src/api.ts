@@ -81,13 +81,37 @@ export type RuntimeState =
   | 'error'
   | 'needs_auth'
   | 'needs_dep'
-  | 'unsupported';
+  | 'unsupported'
+  /** 不在监控时段：一次请求都不发 */
+  | 'paused'
+  /** 平台拒绝进房（观看范围 / 付费直播） */
+  | 'blocked';
 
 export interface Runtime {
   taskId: string;
   state: RuntimeState;
   detail: string | null;
   updatedAt: string;
+}
+
+/**
+ * 「实际拿到的画质」——与 `Task.quality`（请求值）分开。
+ * 平台会静默降级（请求原画只给高清且不报错），所以两者都要能看见。
+ */
+export interface QualityActual {
+  qn: number | null;
+  label: string | null;
+  codec: string | null;
+  format: string | null;
+  requested: string | null;
+  degraded: boolean;
+}
+
+/** 任务级监控时段；空数组 = 全天。`start > end` 表示跨午夜。 */
+export interface MonitorWindow {
+  start: string;
+  end: string;
+  days?: number[];
 }
 
 export interface Task {
@@ -103,10 +127,12 @@ export interface Task {
   checkNow: boolean;
   quality: string | null;
   qualityOptions: string[];
+  qualityActual: QualityActual | null;
   segmentTimeS: number;
   postprocess: 'merge' | 'per_segment' | 'manual';
   maxSessionS: number;
   maxSessionBytes: number;
+  monitorWindows: MonitorWindow[];
   createdAt: string;
   updatedAt: string;
   runtime: Runtime;
@@ -156,6 +182,52 @@ export interface Artifact {
   durationS: number;
   sizeBytes: number;
   createdAt: string;
+}
+
+export type MergeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'skipped';
+
+export interface MergeOutput {
+  path: string;
+  group: number;
+  sessionIds: string[];
+  segmentCount: number;
+  durationS: number;
+  sizeBytes: number;
+  layout: string | null;
+}
+
+export interface MergeGap {
+  afterSessionId: string;
+  afterPartNo: number;
+  beforeSessionId: string;
+  durationS: number;
+}
+
+export interface MergeJob {
+  id: string;
+  sessionIds: string[];
+  status: MergeStatus;
+  outputs: MergeOutput[];
+  gaps: MergeGap[];
+  planned: number;
+  done: number;
+  progress: number;
+  message: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+}
+
+/** 合并页里的源会话摘要（`GET /api/merges/:id` 带出来） */
+export interface MergeSource {
+  id: string;
+  missing: boolean;
+  startedAt: string | null;
+  endedAt: string | null;
+  streamerName: string | null;
+  platform: string | null;
+  segmentCount: number;
+  durationS: number;
 }
 
 export interface NotificationRow {
@@ -272,6 +344,8 @@ export const STATE_LABEL: Record<string, string> = {
   needs_auth: '需要登录',
   needs_dep: '缺少运行环境',
   unsupported: '平台未支持',
+  paused: '不在监控时段',
+  blocked: '无法观看',
 };
 
 export const INTEGRITY_LABEL: Record<string, string> = {
@@ -281,4 +355,12 @@ export const INTEGRITY_LABEL: Record<string, string> = {
   recovered: '崩溃抢救',
   cleaned: '源已清理',
   orphan: '孤儿文件',
+};
+
+export const MERGE_STATUS_LABEL: Record<MergeStatus, string> = {
+  queued: '排队中',
+  running: '合并中',
+  completed: '已完成',
+  failed: '失败',
+  skipped: '已跳过',
 };

@@ -13,6 +13,7 @@ import {
 } from '../api.ts';
 import { Badge, Button, Card, Empty, ErrorText, PageHeader } from '../components.tsx';
 import { useAsync } from '../hooks.ts';
+import { PlatformMark } from '../platformMarks.tsx';
 
 interface Detail {
   session: Session;
@@ -65,7 +66,17 @@ const integrityTone = (v: string): 'ok' | 'warn' | 'error' | 'info' | 'neutral' 
   return 'neutral';
 };
 
-export function SessionDetail({ id, tick, back }: { id: string; tick: number; back: () => void }): ReactNode {
+export function SessionDetail({
+  id,
+  tick,
+  back,
+  join,
+}: {
+  id: string;
+  tick: number;
+  back: () => void;
+  join: () => void;
+}): ReactNode {
   const detail = useAsync<Detail>(() => api.get(`/api/sessions/${id}`), [tick, id]);
   const events = useAsync<{ events: EventRow[] }>(() => api.get(`/api/sessions/${id}/events`), [tick, id]);
   const [mergeState, setMergeState] = useState<string | null>(null);
@@ -103,6 +114,21 @@ export function SessionDetail({ id, tick, back }: { id: string; tick: number; ba
   }
   const gapTotalS = gaps.reduce((n, g) => n + g.durationS, 0);
 
+  /**
+   * 这一场究竟录成什么样：档位名来自插件（解析时给的），分辨率/编码来自
+   * ffprobe 实测的第一段 —— 两者拼在一起，才是"眼睛能看到的事实"。
+   */
+  const firstVideo = segments.find((s) => s.width !== null && s.height !== null);
+  const qualityParts: string[] = [];
+  if (task?.qualityActual?.label != null) qualityParts.push(task.qualityActual.label);
+  if (firstVideo !== undefined && firstVideo.width !== null && firstVideo.height !== null) {
+    qualityParts.push(`${String(firstVideo.width)}×${String(firstVideo.height)}`);
+  }
+  const vCodec = firstVideo?.videoCodec ?? task?.qualityActual?.codec ?? null;
+  if (vCodec !== null && vCodec.length > 0) qualityParts.push(vCodec.toUpperCase());
+  const qualityText = qualityParts.join(' · ');
+  const qualityDegraded = task?.qualityActual?.degraded === true;
+
   const markers: TimelineMarker[] = [];
   for (const e of allEvents) {
     const label = MARKER_LABEL[e.kind];
@@ -126,12 +152,26 @@ export function SessionDetail({ id, tick, back }: { id: string; tick: number; ba
   return (
     <div className="space-y-4">
       <PageHeader
-        title={task?.streamerName ?? '录制会话'}
+        title={
+          <>
+            <PlatformMark platform={task?.platform ?? null} size={18} />
+            <span className="truncate">{task?.streamerName ?? '录制会话'}</span>
+          </>
+        }
         subtitle={`${fmtTime(session.startedAt)} → ${session.endedAt === null ? '进行中' : fmtTime(session.endedAt)}`}
         actions={
           <>
             <Button variant="ghost" onClick={back}>
               ← 返回
+            </Button>
+            {/* 直播中途被关播会切成好几场，单场合并没有意义 —— 入口放在这里最顺手 */}
+            <Button
+              variant="subtle"
+              onClick={join}
+              disabled={session.endedAt === null}
+              title={session.endedAt === null ? '还在录制，结束后才能合并' : '到录制页勾选其他场次一起合并'}
+            >
+              加入合并
             </Button>
             <Button variant="subtle" onClick={() => void merge()} disabled={segments.length === 0}>
               重新合并
@@ -148,6 +188,18 @@ export function SessionDetail({ id, tick, back }: { id: string; tick: number; ba
         <Badge tone="neutral">总时长 {fmtDuration(total)}</Badge>
         <Badge tone="neutral">{String(segments.length)} 段</Badge>
         <Badge tone="neutral">{fmtBytes(segments.reduce((n, s) => n + s.sizeBytes, 0))}</Badge>
+        {qualityText.length > 0 && (
+          <Badge
+            tone={qualityDegraded ? 'warn' : 'neutral'}
+            title={
+              qualityDegraded
+                ? `请求 ${task?.qualityActual?.requested ?? '—'}，平台实际给了 ${task?.qualityActual?.label ?? '更低档位'}`
+                : '这一场的画质（档位来自解析，分辨率来自首段 ffprobe）'
+            }
+          >
+            {qualityText}
+          </Badge>
+        )}
       </div>
 
       {error !== null && <ErrorText>{error}</ErrorText>}

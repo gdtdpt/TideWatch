@@ -104,6 +104,16 @@ describe('后处理参数', () => {
     expect(args[args.length - 1]).toBe('/out/a.fixed.ts');
   });
 
+  it('整组重封装按视频在前重排流序（-map 0 会保留音频在前，拼接必崩）', () => {
+    const args = remuxArgs('/out/a.ts', '/out/a.fixed.ts');
+    // 不能是 `-map 0`：B 站 FLV 音频在前，保留原序会让 concat 在段边界错配流
+    expect(args).not.toContain('0');
+    const first = indexOf(args, '-map');
+    expect(args[first + 1]).toBe('0:v:0?');
+    expect(args[first + 2]).toBe('-map');
+    expect(args[first + 3]).toBe('0:a:0?');
+  });
+
   it('探测与抽查各自的最小参数', () => {
     expect(probeArgs('/out/a.ts')).toContain('-show_streams');
     expect(verifyArgs('/out/a.mp4')).toEqual(['-v', 'error', '-i', '/out/a.mp4', '-map', '0', '-f', 'null', '-']);

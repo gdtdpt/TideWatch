@@ -17,6 +17,10 @@ export type PluginErrorCode =
   | 'PLATFORM_CHANGED'
   | 'PLATFORM_UNSUPPORTED'
   | 'UNSUPPORTED_URL'
+  /** 主播没开播（或刚下播）：不是错误，按"未开播"处理，别记成 INTERNAL */
+  | 'NOT_LIVE'
+  /** 平台拒绝进房：主播设了观看范围 / 付费直播 / 粉丝团可见，带 retry_after_s 长退避 */
+  | 'RESTRICTED'
   | 'NETWORK'
   | 'INTERNAL';
 

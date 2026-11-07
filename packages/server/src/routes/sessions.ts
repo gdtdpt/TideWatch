@@ -22,6 +22,7 @@ export function registerSessionRoutes(app: FastifyInstance, service: TidewatchSe
           const task = service.store.getTask(s.taskId);
           return {
             ...s,
+            platform: task?.platform ?? null,
             streamerName: task?.streamerName ?? null,
             segmentCount: service.store.listSegments(s.id).length,
             durationS: service.store.sumSegmentDuration(s.id),
@@ -43,15 +44,18 @@ export function registerSessionRoutes(app: FastifyInstance, service: TidewatchSe
     };
   });
 
-  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; before?: string } }>(
     '/api/sessions/:id/events',
     async (req, reply) => {
       const session = service.store.getSession(req.params.id);
       if (session === undefined) return reply.code(404).send({ error: 'not-found', message: '会话不存在' });
-      const events = service.store
-        .listEvents({ limit: 1000 })
-        .filter((e) => e.sessionId === session.id)
-        .slice(0, Number(req.query.limit ?? 200));
+      // 直接按 session_id 查（idx_events_session）。老写法是"捞最新 1000 条再过滤"，
+      // 库里事件一多，越老的会话时间线越容易空 —— 与归档无关，是查询本身的问题。
+      const before = Number(req.query.before ?? 0);
+      const events = service.store.listSessionEvents(session.id, {
+        limit: Number(req.query.limit ?? 200),
+        ...(Number.isFinite(before) && before > 0 ? { before } : {}),
+      });
       return { events };
     },
   );

@@ -5,7 +5,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { ResolveFailure, ResolveOutcome, ResolveResult, ResolverPort } from '@tidewatch/core';
-import type { Store, Task } from '@tidewatch/store';
+import type { Store, QualityActual, Task } from '@tidewatch/store';
 import type { CredentialStore } from '@tidewatch/host-adapter';
 import type { PluginErrorCode, PluginHost } from '@tidewatch/protocol';
 import type { PluginManager } from './plugins.ts';
@@ -30,6 +30,29 @@ const asHeaders = (v: unknown): Record<string, string> => {
   const out: Record<string, string> = {};
   for (const [k, val] of Object.entries(v)) if (typeof val === 'string') out[k] = val;
   return out;
+};
+
+/**
+ * `quality_actual` → 领域对象。
+ *
+ * 宽容解析的理由：这是插件**可选**新增的字段（协议 2 里平铺），老插件不回、
+ * 或只回一半都不能让整次解析失败。qn 与 label 都缺就当"没提供"（null）。
+ */
+const asQualityActual = (v: unknown): QualityActual | null => {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const rawQn = o['qn'];
+  const qn = typeof rawQn === 'number' && Number.isFinite(rawQn) ? rawQn : null;
+  const label = asString(o['label']);
+  if (qn === null && label === null) return null;
+  return {
+    qn,
+    label,
+    codec: asString(o['codec']),
+    format: asString(o['format']),
+    requested: asString(o['requested']),
+    degraded: asBool(o['degraded']),
+  };
 };
 
 /** 直链兜底：没有插件也能用（`.m3u8` / `.flv` 本身就是流地址） */
@@ -99,6 +122,7 @@ export class PluginResolver implements ResolverPort {
           isOverseas: false,
           headers: {},
           qualityOptions: [],
+          qualityActual: null,
           cookiesOut: null,
         },
       };
@@ -170,6 +194,7 @@ export class PluginResolver implements ResolverPort {
         isOverseas: asBool(d['is_overseas']),
         headers: asHeaders(d['http_headers']),
         qualityOptions: asStringArray(d['quality_options']),
+        qualityActual: asQualityActual(d['quality_actual']),
         cookiesOut,
       },
     };

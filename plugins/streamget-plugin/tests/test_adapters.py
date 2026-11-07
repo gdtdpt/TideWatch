@@ -127,6 +127,52 @@ class StreamgetGuard(unittest.TestCase):
             self.assertEqual(adapters._streamget_quality(raw), "OD", f"输入 {raw!r}")
 
 
+class QualityActual(unittest.TestCase):
+    """回给宿主的"实际画质"—— 平台静默降级时这是唯一的真相来源。
+
+    没有它，未登录请求原画只拿到高清这件事完全不可见：`code` 是 0、不报错，
+    用户只会觉得"录出来怎么这么糊"。
+    """
+
+    def test_degraded_when_below_room_ceiling(self):
+        bili = {"qn": 150, "codec": "avc", "format": "flv", "options": ["原画", "高清"]}
+        self.assertEqual(
+            adapters._bili_quality_actual(bili, "原画"),
+            {"qn": 150, "label": "高清", "codec": "avc", "format": "flv",
+             "requested": "原画", "degraded": True},
+        )
+
+    def test_room_ceiling_is_not_a_downgrade(self):
+        """房间最高只有蓝光：请求原画拿到蓝光不算降级（上不去 ≠ 被降级）。"""
+        bili = {"qn": 400, "codec": "hevc", "format": "flv", "options": ["蓝光", "流畅"]}
+        got = adapters._bili_quality_actual(bili, None)
+        self.assertFalse(got["degraded"])
+        # 用户没显式设档位时，requested 报"本房间最高"，才解释得通
+        self.assertEqual(got["requested"], "蓝光")
+
+    def test_explicit_request_is_echoed(self):
+        bili = {"qn": 250, "codec": "avc", "format": "ts", "options": ["原画", "超清"]}
+        got = adapters._bili_quality_actual(bili, "超清")
+        self.assertEqual((got["requested"], got["degraded"]), ("超清", False))
+
+    def test_generic_platform_never_claims_degradation(self):
+        """判断不了就别谎报：其它平台一律 degraded=False，qn 为 None。"""
+
+        class Sd:
+            quality = "720p"
+
+        got = adapters._generic_quality_actual(Sd(), None)
+        assert got is not None
+        self.assertEqual((got["qn"], got["label"], got["degraded"]), (None, "720p", False))
+        self.assertIsNone(got["requested"])
+
+    def test_generic_platform_without_quality_is_null(self):
+        class Sd:
+            quality = None
+
+        self.assertIsNone(adapters._generic_quality_actual(Sd(), "720p"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -448,3 +494,42 @@ class ClassifyExceptionTest(unittest.TestCase):
         self.assertEqual(code, "UNSUPPORTED_URL")
         self.assertIs(retryable, False)
         self.assertIn("未返回直播数据", message)
+
+    def test_room_visibility_restriction_is_not_a_bug(self):
+        """主播设了观看范围 → RESTRICTED，半小时后再试。
+
+        2026-11-03 真机：抖音连续 46 次每 30 秒返回这句话，全被兜底成 INTERNAL，
+        任务卡一直显示"出错"，用户以为程序坏了。
+        """
+        from adapters import classify_exception
+
+        code, message, retryable, retry_after = classify_exception(
+            Exception("你不在主播设置的可见范围内，无法进入TA的直播间")
+        )
+        self.assertEqual(code, "RESTRICTED")
+        self.assertIs(retryable, True)
+        self.assertEqual(retry_after, 1800, "撞门没用，等半小时")
+        self.assertIn("可见范围", message)
+
+    def test_ended_live_is_a_state_not_an_error(self):
+        """抖音下播抛异常而不是返回空 → NOT_LIVE，不能记成 INTERNAL。
+
+        2026-11-04 实测：下播期间每 30 秒记一条"出错"，一天 61 条噪音。
+        """
+        from adapters import classify_exception
+
+        for raw in ("直播已结束", "Exception: 直播已结束", "该主播已下播"):
+            code, _message, retryable, retry_after = classify_exception(Exception(raw))
+            self.assertEqual(code, "NOT_LIVE", f"输入 {raw!r}")
+            self.assertIs(retryable, True)
+            self.assertIsNone(retry_after)
+
+    def test_risk_control_still_wins_over_ended_live(self):
+        """同时提到风控和下播时，风控优先（退避 60s 而不是当成正常下播）。"""
+        from adapters import classify_exception
+
+        code, _message, _retryable, retry_after = classify_exception(
+            Exception("直播已结束 it triggered risk control")
+        )
+        self.assertEqual(code, "RATE_LIMITED")
+        self.assertEqual(retry_after, 60)

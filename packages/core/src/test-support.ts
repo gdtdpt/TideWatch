@@ -232,6 +232,7 @@ export function liveOutcome(overrides: Partial<Extract<ResolveOutcome, { ok: tru
       isOverseas: false,
       headers: {},
       qualityOptions: ['origin'],
+      qualityActual: null,
       cookiesOut: null,
       ...overrides,
     },

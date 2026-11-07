@@ -98,6 +98,16 @@ def classify_exception(e: Exception) -> tuple[str, str, bool, int | None]:
     # 把后者也标成"风控"，用户会白等 60s 退避，还会误以为账号被封（M3.2 修正）。
     if "risk control" in msg or "风控" in msg:
         return ("RATE_LIMITED", f"平台风控: {msg}", True, 60)
+    # 平台明确说"你没权限看"：主播设了观看范围（抖音 2026-11-03 真机：连着 46 次
+    # 每 30 秒撞一次门）、付费直播、仅粉丝团可见。这既不是网络问题也不是我们的 bug，
+    # 属于"除非用户去登录/加团，否则这一场看不到" —— 给长退避，别持续撞。
+    if any(k in msg for k in ("可见范围", "观看权限", "无权观看", "仅粉丝团", "付费直播", "专属直播")):
+        return ("RESTRICTED", f"平台拒绝进房: {msg}", True, 1800)
+    # 主播没开播 / 刚下播。抖音的 webcast 在下播时**抛异常**而不是返回空数据，
+    # 兜底成 INTERNAL 的后果是：下播期间每 30 秒记一条"出错"，一天刷上千条
+    # （2026-11-04 实测 61 条）。"没开播"是正常状态，不是错误。
+    if any(k in msg for k in ("直播已结束", "已下播", "未开播", "主播不在", "not live", "room not live")):
+        return ("NOT_LIVE", msg, True, None)
     if "VR live" in msg:
         # ⚠️ 这句话是 streamget 的**兜底文案**，不能照抄成结论：`_get_web_stream_data`
         # 只在 `data` 为空且没有 `prompts` 时抛它，而**房间下播**同样会让 `data` 变空
@@ -296,6 +306,48 @@ def _unsupported(platform: str | None, url: str) -> PluginError:
     )
 
 
+def _generic_quality_actual(sd: Any, requested: Any) -> dict | None:
+    """非 B 站平台的"实际画质"。
+
+    streamget 对其它平台只暴露一个 `quality` 字符串，既不保证语义也不保证有值 ——
+    所以这里只做**如实转述**：`degraded` 一律 False（判断不了就别谎报），
+    `requested` 只在用户显式设了档位时才填。
+    """
+    label = getattr(sd, "quality", None)
+    if not label:
+        return None
+    return {
+        "qn": None,
+        "label": str(label),
+        "codec": None,
+        "format": None,
+        "requested": None if requested in (None, "") else str(requested),
+        "degraded": False,
+    }
+
+
+def _bili_quality_actual(bili: dict, requested: Any) -> dict:
+    """B站"实际画质"：qn + 中文档位 + 编码 + 封装，并判定是否被降级。
+
+    降级的比较基准是 `min(用户请求, 房间可选最高档)`：房间本身最高只有蓝光时，
+    "请求原画却拿到蓝光"不该报警（上不去不是被降级）；只有连**本房间能给的最好**
+    都没拿到，才是真正的静默降级（未登录 / 会员画质 / 线路问题）。
+    """
+    explicit = requested not in (None, "")
+    want = _bili_target_qn(requested)
+    best_option = max((_LABEL_QN.get(x, 0) for x in bili["options"]), default=0)
+    ceiling = min(want, best_option) if best_option > 0 else want
+    asked_qn = want if explicit else (best_option or want)
+    return {
+        "qn": bili["qn"],
+        "label": BILI_QN_NAMES.get(bili["qn"], str(bili["qn"])),
+        "codec": bili["codec"],
+        "format": bili["format"],
+        "requested": BILI_QN_NAMES.get(asked_qn, str(asked_qn)),
+        "degraded": bili["qn"] < ceiling,
+    }
+
+
 def resolve(req: dict) -> dict:
     url = req.get("url", "")
     platform = req.get("platform") or _match_platform(url)
@@ -338,7 +390,8 @@ def resolve(req: dict) -> dict:
     if bili is not None:
         record_url = bili["url"]
         want = _bili_target_qn(req.get("quality"))
-        level = "warn" if bili["qn"] < want else "info"
+        quality_actual = _bili_quality_actual(bili, req.get("quality"))
+        level = "warn" if quality_actual["degraded"] else "info"
         print(f"[bilibili] {level}: 实际 qn={bili['qn']}({BILI_QN_NAMES.get(bili['qn'], '?')}) "
               f"codec={bili['codec']} fmt={bili['format']}（请求 {want}；"
               f"本房间可选 {bili['options']}）", file=sys.stderr)
@@ -347,10 +400,12 @@ def resolve(req: dict) -> dict:
         # FLV 优先平台：flv 可用则用 flv（h265→HLS 的退避判断在 M3 补齐，见验证记录）
         record_url = sd.flv_url
         quality_options = [sd.quality] if sd.quality else []
+        quality_actual = _generic_quality_actual(sd, req.get("quality"))
     else:
         # 部分平台只填 record_url，留作最终兜底
         record_url = sd.m3u8_url or sd.flv_url or sd.record_url
         quality_options = [sd.quality] if sd.quality else []
+        quality_actual = _generic_quality_actual(sd, req.get("quality"))
 
     extra = dict(sd.extra or {})
     return {
@@ -367,6 +422,9 @@ def resolve(req: dict) -> dict:
         # 画质下拉的选项 = 该房间**最近一次解析到的真实可用档位**（B站给全档，
         # 其余平台 streamget 只暴露单值 → 退化成一项，UI 会自动转回自由填写）。
         "quality_options": quality_options,
+        # 这次**实际**选中的档位（协议 2 平铺）。平台静默降级时只有它能说明真相：
+        # 请求原画、拿到高清，`code` 仍是 0 —— 没有这一项，用户只能靠肉眼判断。
+        "quality_actual": quality_actual,
         "extra": extra,
     }
 

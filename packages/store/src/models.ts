@@ -39,7 +39,56 @@ export type RuntimeState =
   | 'error'
   | 'needs_auth'
   | 'needs_dep'
-  | 'unsupported';
+  | 'unsupported'
+  /** 不在监控时段：一次请求都不发，等到点自动恢复 */
+  | 'paused'
+  /** 平台拒绝进房（主播设了观看范围 / 付费直播），半小时后再试 */
+  | 'blocked';
+
+/**
+ * 「实际拿到的画质」——与 `Task.quality`（**请求**的档位）是两件事。
+ *
+ * 平台会静默降级：B站未登录时老接口请求原画（qn=10000）只回高清（150），
+ * `code` 仍是 0、不报错，用户只会觉得"录出来怎么这么糊"（2026-10-07 实测）。
+ * 所以"我要的"和"实际给的"必须分别可见。
+ */
+export interface QualityActual {
+  /** 平台档位码（B站 qn；没有这个概念的平台为 null） */
+  qn: number | null;
+  /** 给人看的档位名（原画 / 1080p60 …）：UI 直接显示它 */
+  label: string | null;
+  codec: string | null;
+  format: string | null;
+  /** 请求档位的可读形式（用于"请求 X，实际 Y"的说明） */
+  requested: string | null;
+  /** 实际档位低于请求 → 降级 */
+  degraded: boolean;
+}
+
+/**
+ * 任务级监控时段。**空数组 = 全天**（老任务维持原行为，不会因为升级就静默停摆）。
+ *
+ * 为什么任务级而不是全局：每个主播的档期不同，一个全局窗口必然有人被削掉。
+ * 为什么允许跨午夜：直播 19:00 开到 02:00 是常态，`start > end` 就是跨午夜。
+ */
+export interface MonitorWindow {
+  /** "HH:MM" 本地时间（含） */
+  start: string;
+  /** "HH:MM" 本地时间（不含）；小于 start 表示跨午夜 */
+  end: string;
+  /** 0=周日 … 6=周六；省略或空 = 每天 */
+  days?: number[];
+}
+
+export type PollReason = 'window_closed' | 'hot' | 'warm' | 'cold' | 'idle_stretch' | 'error_backoff';
+
+/** 下一次轮询该等多久、为什么 */
+export interface PollPlan {
+  delayMs: number;
+  reason: PollReason;
+  /** 仅 `window_closed`：下一个时段开启时刻（ISO） */
+  resumeAt: string | null;
+}
 
 export interface Task {
   id: string;
@@ -59,11 +108,15 @@ export interface Task {
   checkNow: boolean;
   quality: string | null;
   qualityOptions: string[];
+  /** 最近一次 resolve 实际选中的档位（没解析过为 null） */
+  qualityActual: QualityActual | null;
   segmentTimeS: number;
   postprocess: Postprocess;
   saveFormat: string;
   maxSessionS: number;
   maxSessionBytes: number;
+  /** 监控时段；空数组 = 全天 */
+  monitorWindows: MonitorWindow[];
   scheduled: unknown;
   override: Record<string, unknown>;
   createdAt: string;
@@ -111,12 +164,68 @@ export interface Artifact {
   createdAt: string;
 }
 
+/**
+ * 跨会话合并（把同一场直播被切成的好几场拼回一个视频）。
+ *
+ * 与「单场后处理」是两件事：产物不属于任何一个会话，所以单独一张表，
+ * 而不是往 `artifacts` 里塞 —— 那边的主键是 (session_id, path)。
+ */
+export type MergeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'skipped';
+
+/** 按流参数分组后的一组产物：不同 layout 的 TS 直拼会在拼接点崩 */
+export interface MergeOutput {
+  path: string;
+  /** 第几组（从 1 开始）；只有一组时也是 1 */
+  group: number;
+  /** 这组覆盖了哪些源会话（按时间序） */
+  sessionIds: string[];
+  segmentCount: number;
+  durationS: number;
+  sizeBytes: number;
+  /** 该组的流参数（`avc-1920x1080-yuv420p+aac-48000-2`），用于解释为什么分组 */
+  layout: string | null;
+}
+
+/**
+ * 缺口：合并后的文件在这里是"跳过去"的，画面上看不出来，必须显式标出。
+ * `afterSessionId === beforeSessionId` 表示同一场内部断流造成的空档。
+ */
+export interface MergeGap {
+  afterSessionId: string;
+  afterPartNo: number;
+  beforeSessionId: string;
+  durationS: number;
+}
+
+export interface MergeJob {
+  id: string;
+  /** 用户选中的会话，已按开始时间升序 */
+  sessionIds: string[];
+  status: MergeStatus;
+  outputs: MergeOutput[];
+  gaps: MergeGap[];
+  /** 计划产出组数 / 已完成组数 */
+  planned: number;
+  done: number;
+  /** 0–1；按 ffmpeg 输出时长估算，供进度条用 */
+  progress: number;
+  message: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+}
+
+/** 保留期分档：过程事件（心跳/噪声）与结果事件（证据）分开算寿命 */
+export type EventClass = 'process' | 'result';
+
 export interface EventRow {
   id: number;
   ts: string;
   taskId: string | null;
   sessionId: string | null;
   kind: string;
+  /** 保留期分档：过程事件 7 天、结果事件 90 天（见 events.ts） */
+  class: EventClass;
   payload: Record<string, unknown>;
 }
 

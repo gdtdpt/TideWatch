@@ -274,6 +274,87 @@ program
   });
 
 program
+  .command('retention')
+  .description('归档并删除过期事件（过程事件 7 天 / 结果事件 90 天）')
+  .option('-p, --port <port>', '端口', '8686')
+  .option('-d, --data-root <path>', '数据根目录')
+  .option('--info', '只看现状（条数 / 库大小 / 归档文件），不执行')
+  .action(async (opts: { port: string; dataRoot?: string; info?: boolean }) => {
+    const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
+    const base = `http://127.0.0.1:${String(opts.port)}`;
+    const result = await api(base, dataRoot, opts.info === true ? 'GET' : 'POST', opts.info === true ? '/api/retention' : '/api/retention/run');
+    console.log(JSON.stringify(result, null, 2));
+  });
+
+program
+  .command('compact')
+  .description('回收已删除事件留下的空页（VACUUM；**必须先 stop**，否则会等锁）')
+  .option('-d, --data-root <path>', '数据根目录')
+  .action(async (opts: { dataRoot?: string }) => {
+    const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
+    const { Store } = await import('@tidewatch/store');
+    const store = Store.open(join(dataRoot, 'tidewatch.db'));
+    const before = store.dbSizeBytes();
+    const free = store.freePages();
+    try {
+      store.compact();
+      const after = store.dbSizeBytes();
+      console.log(`已回收：${(before / 1024 / 1024).toFixed(1)} MB → ${(after / 1024 / 1024).toFixed(1)} MB（空闲页 ${String(free)}）`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`压缩失败：${msg}`);
+      if (/busy|locked/i.test(msg)) console.error('daemon 还在运行：先 tidewatch stop，再跑一次 compact。');
+      process.exitCode = 1;
+    } finally {
+      store.close();
+    }
+  });
+
+program
+  .command('merge <sessionIds...>')
+  .description('把几场录制按时间顺序合并成一个视频（跨会话拼接）')
+  .option('-p, --port <port>', '端口', '8686')
+  .option('-d, --data-root <path>', '数据根目录')
+  .option('--sessions <ids>', '逗号分隔的会话 id（与位置参数等价）')
+  .option('--wait', '等到合并结束再退出')
+  .action(async (sessionIds: string[], opts: { port: string; dataRoot?: string; sessions?: string; wait?: boolean }) => {
+    const dataRoot = opts.dataRoot === undefined ? defaultDataRoot() : resolve(opts.dataRoot);
+    const base = `http://127.0.0.1:${String(opts.port)}`;
+    const ids = [...sessionIds, ...(opts.sessions ?? '').split(',')].map((s) => s.trim()).filter((s) => s.length > 0);
+    if (ids.length < 2) {
+      console.error('至少给两个会话 id：tidewatch merge <id1> <id2> [id3...]');
+      process.exit(1);
+    }
+    const created = (await api(base, dataRoot, 'POST', '/api/merges', { sessionIds: ids })) as {
+      job?: { id: string };
+    };
+    const jobId = created.job?.id;
+    if (jobId === undefined) {
+      console.error('服务端没有返回合并任务 id');
+      process.exit(1);
+    }
+    console.log(`已受理：${jobId}（界面上看：录制 → 合并记录）`);
+    if (opts.wait !== true) return;
+
+    // 轮询而不是订阅事件流：CLI 是一次性进程，SSE 在这里只会多一层重连逻辑
+    for (;;) {
+      const detail = (await api(base, dataRoot, 'GET', `/api/merges/${jobId}`)) as {
+        merge?: { status: string; progress: number; outputs: { path: string; durationS: number }[]; message: string | null };
+      };
+      const job = detail.merge;
+      if (job === undefined) break;
+      process.stdout.write(`\r${job.status} ${String(Math.round(job.progress * 100))}%`);
+      if (job.status !== 'queued' && job.status !== 'running') {
+        process.stdout.write('\n');
+        for (const o of job.outputs) console.log(`产物：${o.path}（${(o.durationS / 60).toFixed(1)} 分钟）`);
+        if (job.message !== null) console.log(`说明：${job.message}`);
+        process.exit(job.status === 'completed' ? 0 : 1);
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  });
+
+program
   .command('service <action>')
   .description('安装/卸载开机自启（install | uninstall | status）')
   .option('-d, --data-root <path>', '数据根目录')

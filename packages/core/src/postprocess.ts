@@ -46,6 +46,61 @@ export interface PostprocessResult {
   reason?: string;
 }
 
+/**
+ * 读一个会话的可用分段：`segments` 表为主，表里没有的由 manifest 补齐
+ * （库丢了/恢复扫描没登记也能合），最后用磁盘上的真实大小核对一遍。
+ *
+ * 导出而非留在类里：跨会话合并要用同一份"什么算可用分段"的判断，
+ * 两份实现早晚会在 `integrity` 的细节上分叉。
+ */
+export async function loadSessionInputs(
+  deps: { store: Store; fs: EngineFs },
+  sessionId: string,
+  outputDir: string,
+): Promise<MergeSegment[]> {
+  const rows = deps.store.listSegments(sessionId);
+  const byPath = new Map<string, MergeSegment>();
+  for (const row of rows) byPath.set(row.path, toMergeSegment(row));
+
+  const manifestText = await deps.fs.readText(joinPath(outputDir, MANIFEST_NAME));
+  if (manifestText !== null) {
+    try {
+      const manifest = parseManifest(JSON.parse(manifestText));
+      for (const s of manifest?.segments ?? []) {
+        const path = /^[A-Za-z]:[\\/]|^\//.test(s.file) ? s.file : joinPath(outputDir, s.file);
+        if (byPath.has(path)) continue;
+        byPath.set(path, {
+          id: `${sessionId}:${String(s.part_no)}`,
+          path,
+          partNo: s.part_no,
+          durationS: s.duration_s,
+          sizeBytes: s.size_bytes,
+          layoutHash: s.layout_hash,
+          integrity: s.integrity,
+          height: s.video?.height ?? null,
+        } satisfies MergeSegment);
+      }
+    } catch {
+      /* manifest 坏了不阻断：以表为准 */
+    }
+  }
+
+  const usable: MergeSegment[] = [];
+  for (const seg of byPath.values()) {
+    if (!(await deps.fs.exists(seg.path))) continue;
+    const size = await deps.fs.statSize(seg.path);
+    // 录制期记录的 size 与磁盘不符 → 按 partial 处理（先规范化再入列）
+    usable.push({
+      ...seg,
+      sizeBytes: size,
+      durationS: seg.durationS > 0 ? seg.durationS : 0,
+      integrity: seg.integrity === 'ok' && seg.sizeBytes !== size ? 'partial' : seg.integrity,
+    });
+  }
+  return usable.sort((a, b) => a.partNo - b.partNo);
+}
+
+
 export class PostProcessor {
   readonly #d: PostprocessDeps;
   readonly #busy = new Set<string>();
@@ -80,7 +135,7 @@ export class PostProcessor {
       return { status: 'skipped', outputs: [], reason: 'manual' };
     }
 
-    const inputs = await this.#loadInputs(sessionId, session.outputDir);
+    const inputs = await loadSessionInputs(this.#d, sessionId, session.outputDir);
     if (inputs.length === 0) {
       this.#emit('merge.skipped', { reason: 'no_usable_segment' }, session.taskId, sessionId);
       this.#draft(copy.mergeSkipped({ reason: 'no_usable_segment' }), session.taskId, sessionId);
@@ -239,50 +294,6 @@ export class PostProcessor {
       this.#d.store.setSegmentIntegrity(input.id, 'cleaned');
     }
     this.#emit('merge.cleanup', { segments: inputs.length }, null, sessionId);
-  }
-
-  /** segments 表为主；表内没有的 part 由 manifest 补齐（库丢了也能合） */
-  async #loadInputs(sessionId: string, outputDir: string): Promise<MergeSegment[]> {
-    const rows = this.#d.store.listSegments(sessionId);
-    const byPath = new Map<string, MergeSegment>();
-    for (const row of rows) byPath.set(row.path, toMergeSegment(row));
-
-    const manifestText = await this.#d.fs.readText(joinPath(outputDir, MANIFEST_NAME));
-    if (manifestText !== null) {
-      try {
-        const manifest = parseManifest(JSON.parse(manifestText));
-        for (const s of manifest?.segments ?? []) {
-          const path = /^[A-Za-z]:[\\/]|^\//.test(s.file) ? s.file : joinPath(outputDir, s.file);
-          if (byPath.has(path)) continue;
-          byPath.set(path, {
-            id: `${sessionId}:${String(s.part_no)}`,
-            path,
-            partNo: s.part_no,
-            durationS: s.duration_s,
-            sizeBytes: s.size_bytes,
-            layoutHash: s.layout_hash,
-            integrity: s.integrity,
-            height: s.video?.height ?? null,
-          } satisfies MergeSegment);
-        }
-      } catch {
-        /* manifest 坏了不阻断：以表为准 */
-      }
-    }
-
-    const usable: MergeSegment[] = [];
-    for (const seg of byPath.values()) {
-      if (!(await this.#d.fs.exists(seg.path))) continue;
-      const size = await this.#d.fs.statSize(seg.path);
-      // 录制期记录的 size 与磁盘不符 → 按 partial 处理（先规范化再入列）
-      usable.push({
-        ...seg,
-        sizeBytes: size,
-        durationS: seg.durationS > 0 ? seg.durationS : 0,
-        integrity: seg.integrity === 'ok' && seg.sizeBytes !== size ? 'partial' : seg.integrity,
-      });
-    }
-    return usable.sort((a, b) => a.partNo - b.partNo);
   }
 
   async #run(args: string[]): Promise<{ code: number | null; stderr: string }> {

@@ -3,7 +3,8 @@
  * 复选框 = 要不要自动；按钮 = 这一刻要不要录；徽标 = 在播/在录的状态。
  */
 import type { FastifyInstance } from 'fastify';
-import type { Task } from '@tidewatch/store';
+import type { MonitorWindow, Task } from '@tidewatch/store';
+import { sanitizeWindows } from '@tidewatch/core';
 import {
   MAX_MAX_SESSION_BYTES,
   MAX_MAX_SESSION_S,
@@ -98,12 +99,29 @@ export function registerTaskRoutes(app: FastifyInstance, service: TidewatchServi
       return reply.code(400).send({ error: 'bad-max-bytes', message: '单场体积上限需在 1MiB..100GiB（0 = 按默认）' });
     }
 
+    // 监控时段：净化规则与引擎共用一套（跨午夜、最多 3 段、非法项丢弃）。
+    // 传空数组 = 恢复全天监控；不传 = 不动。
+    let monitorWindows: MonitorWindow[] | undefined;
+    if (body['monitorWindows'] !== undefined) {
+      const raw = body['monitorWindows'];
+      if (!Array.isArray(raw)) {
+        return reply.code(400).send({ error: 'bad-windows', message: 'monitorWindows 必须是数组' });
+      }
+      monitorWindows = sanitizeWindows(raw);
+      if (monitorWindows.length === 0 && raw.length > 0) {
+        return reply
+          .code(400)
+          .send({ error: 'bad-windows', message: '时段格式需为 {start:"HH:MM", end:"HH:MM"}，且起止不能相同' });
+      }
+    }
+
     const updated = service.store.patchTask(task.id, {
       ...(str(body['quality']) !== undefined ? { quality: str(body['quality']) ?? null } : {}),
       ...(segmentTimeS === undefined ? {} : { segmentTimeS }),
       ...(postprocess === undefined ? {} : { postprocess: postprocess as Task['postprocess'] }),
       ...(maxSessionS === undefined ? {} : { maxSessionS }),
       ...(maxSessionBytes === undefined ? {} : { maxSessionBytes }),
+      ...(monitorWindows === undefined ? {} : { monitorWindows }),
     });
     return { task: taskView(service, updated) };
   });

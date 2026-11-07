@@ -1,11 +1,11 @@
 /**
- * 系统面：健康、插件、Cookie（只回掩码）、诊断包、回放（Range）。
+ * 系统面：健康、插件、Cookie（只回掩码）、诊断包、数据保留、回放（Range）。
  */
 import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { SCHEMA_VERSION } from '@tidewatch/store';
+import { describeRetention, SCHEMA_VERSION } from '@tidewatch/store';
 import type { TidewatchService } from '../service.ts';
 
 type Body = Record<string, unknown>;
@@ -109,6 +109,19 @@ export function registerSystemRoutes(
     const file = join(dir, `tidewatch-diagnose-${stamp()}.md`);
     await writeFile(file, await buildDiagnostics(service), 'utf8');
     return { path: file };
+  });
+
+  /** 数据保留现状：事件条数分档、库大小、归档文件数 */
+  app.get('/api/retention', async () => service.retentionInfo);
+
+  /** 立即归档（过期事件先写 gzip 再删）；仪表盘的"立即归档"按钮用它 */
+  app.post('/api/retention/run', async () => {
+    const result = await service.runRetention();
+    return {
+      ...result,
+      summary: describeRetention(result),
+      ...(result.error === null ? {} : { message: `归档有失败：${result.error}` }),
+    };
   });
 
   app.get<{ Querystring: { path?: string } }>('/api/videos', async (req, reply) => {

@@ -3,6 +3,7 @@ import { api, setUnauthorizedHandler } from './api.ts';
 import { Login } from './Login.tsx';
 import { Notifications } from './Notifications.tsx';
 import { useLive, useRoute } from './hooks.ts';
+import { MergeDetail } from './pages/MergeDetail.tsx';
 import { Overview } from './pages/Overview.tsx';
 import { Recordings } from './pages/Recordings.tsx';
 import { SessionDetail } from './pages/SessionDetail.tsx';
@@ -84,7 +85,8 @@ export function App(): ReactNode {
             const active =
               item.path === ''
                 ? route.page === 'overview'
-                : route.page === item.path || (item.path === 'recordings' && route.page === 'session');
+                : route.page === item.path ||
+                  (item.path === 'recordings' && (route.page === 'session' || route.page === 'merge'));
             return (
               <button
                 key={item.path}
@@ -142,9 +144,23 @@ export function App(): ReactNode {
         <main className="mx-auto w-full max-w-6xl flex-1 p-4 pb-24 lg:p-6 lg:pb-6">
           {route.page === 'overview' && <Overview tick={tick} navigate={nav} />}
           {route.page === 'tasks' && <Tasks tick={tick} navigate={nav} />}
-          {route.page === 'recordings' && <Recordings tick={tick} navigate={nav} />}
+          {route.page === 'recordings' && (
+            <Recordings
+              tick={tick}
+              navigate={nav}
+              {...(route.preselect === undefined ? {} : { preselect: route.preselect })}
+            />
+          )}
           {route.page === 'session' && (
-            <SessionDetail id={route.id} tick={tick} back={() => nav('recordings')} />
+            <SessionDetail
+              id={route.id}
+              tick={tick}
+              back={() => nav('recordings')}
+              join={() => nav(`recordings/${route.id}`)}
+            />
+          )}
+          {route.page === 'merge' && (
+            <MergeDetail id={route.id} tick={tick} navigate={nav} back={() => nav('recordings')} />
           )}
           {route.page === 'settings' && <Settings tick={tick} />}
         </main>
@@ -154,7 +170,8 @@ export function App(): ReactNode {
             const active =
               item.path === ''
                 ? route.page === 'overview'
-                : route.page === item.path || (item.path === 'recordings' && route.page === 'session');
+                : route.page === item.path ||
+                  (item.path === 'recordings' && (route.page === 'session' || route.page === 'merge'));
             return (
               <button
                 key={item.path}

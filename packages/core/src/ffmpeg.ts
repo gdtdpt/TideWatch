@@ -112,6 +112,11 @@ export interface ConcatSpec {
   listFile: string;
   outFile: string;
   faststart: boolean;
+  /**
+   * 往 stdout 打 `-progress`（`out_time_us=...`）。跨会话合并要拿它算进度条；
+   * 单场后处理不需要，多一路输出反而多占管道。
+   */
+  progress?: boolean;
 }
 
 /** 零转码拼接：`-c copy`；faststart 需整文件重写，默认按大小阈值决定 */
@@ -131,11 +136,22 @@ export function concatArgs(spec: ConcatSpec): string[] {
     'copy',
   ];
   if (spec.faststart) args.push('-movflags', '+faststart');
+  if (spec.progress === true) args.push('-progress', 'pipe:1');
   args.push('-y', spec.outFile);
   return args;
 }
 
-/** 整组同质化重封装：统一流顺序 + 丢残帧（docs/03 §8 实现注记） */
+/**
+ * 整组同质化重封装：统一流顺序 + 丢残帧（docs/03 §8 实现注记）。
+ *
+ * `-map` 必须**显式按 stream specifier 排序**，不能写 `-map 0`：
+ * B 站 FLV 是「音频在前」（流 0=audio、1=video），抖音是「视频在前」。
+ * `-map 0` 保留输入原始顺序，重封装后仍是音频在前，与后续段对不上；
+ * concat 按流序号配对，到段边界就把音频包塞进视频流 →
+ * `Error muxing a packet` / `AVERROR_INVALIDDATA`，整场录制白录。
+ * 实测（2026-11-01 老猫鱼那场）：`-map 0` 拼 2 小时必崩在 3600s，
+ * 改成 video-first 后 2:08:16 一次过。`?` 让无音轨的段不至于直接失败。
+ */
 export function remuxArgs(input: string, output: string): string[] {
   return [
     '-hide_banner',
@@ -145,7 +161,9 @@ export function remuxArgs(input: string, output: string): string[] {
     '-i',
     input,
     '-map',
-    '0',
+    '0:v:0?',
+    '-map',
+    '0:a:0?',
     '-c',
     'copy',
     '-fflags',

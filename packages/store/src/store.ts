@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { migrate, openDatabase } from './db.ts';
+import { eventClassOf } from './events.ts';
 import { MIGRATIONS, SCHEMA_VERSION } from './migrations.ts';
 import {
   DEFAULT_SETTINGS,
@@ -14,10 +15,17 @@ import {
   type Artifact,
   type AuditRow,
   type EndReason,
+  type EventClass,
   type EventRow,
   type Integrity,
+  type MergeGap,
+  type MergeJob,
+  type MergeOutput,
+  type MergeStatus,
+  type MonitorWindow,
   type NotificationRow,
   type Postprocess,
+  type QualityActual,
   type RuntimeRow,
   type RuntimeState,
   type Segment,
@@ -57,11 +65,13 @@ function toTask(r: Row): Task {
     checkNow: bool(r['check_now']),
     quality: strOrNull(r['quality']),
     qualityOptions: json<string[]>(r['quality_options'], []),
+    qualityActual: json<QualityActual | null>(r['quality_actual'], null),
     segmentTimeS: num(r['segment_time_s']) || 1800,
     postprocess: (['merge', 'per_segment', 'manual'] as const).find((p) => p === r['postprocess']) ?? 'merge',
     saveFormat: str(r['save_format']) || 'ts',
     maxSessionS: num(r['max_session_s']),
     maxSessionBytes: num(r['max_session_bytes']),
+    monitorWindows: json<MonitorWindow[]>(r['monitor_windows'], []),
     scheduled: json<unknown>(r['scheduled'], null),
     override: json<Record<string, unknown>>(r['override'], {}),
     createdAt: str(r['created_at']),
@@ -119,6 +129,23 @@ function toNotification(r: Row): NotificationRow {
   };
 }
 
+function toMergeJob(r: Row): MergeJob {
+  return {
+    id: str(r['id']),
+    sessionIds: json<string[]>(r['session_ids'], []),
+    status: (['queued', 'running', 'completed', 'failed', 'skipped'] as const).find((s) => s === r['status']) ?? 'queued',
+    outputs: json<MergeOutput[]>(r['outputs'], []),
+    gaps: json<MergeGap[]>(r['gaps'], []),
+    planned: num(r['planned']),
+    done: num(r['done']),
+    progress: num(r['progress']),
+    message: strOrNull(r['message']),
+    createdAt: str(r['created_at']),
+    startedAt: strOrNull(r['started_at']),
+    endedAt: strOrNull(r['ended_at']),
+  };
+}
+
 function toEvent(r: Row): EventRow {
   return {
     id: num(r['id']),
@@ -126,6 +153,7 @@ function toEvent(r: Row): EventRow {
     taskId: strOrNull(r['task_id']),
     sessionId: strOrNull(r['session_id']),
     kind: str(r['kind']),
+    class: str(r['class']) === 'process' ? 'process' : 'result',
     payload: json<Record<string, unknown>>(r['payload'], {}),
   };
 }
@@ -142,6 +170,7 @@ export interface AddTaskInput {
   monitorEnabled?: boolean;
   maxSessionS?: number;
   maxSessionBytes?: number;
+  monitorWindows?: MonitorWindow[];
 }
 
 export interface TaskPatch {
@@ -151,10 +180,12 @@ export interface TaskPatch {
   checkNow?: boolean;
   quality?: string | null;
   qualityOptions?: string[];
+  qualityActual?: QualityActual | null;
   segmentTimeS?: number;
   postprocess?: Postprocess;
   maxSessionS?: number;
   maxSessionBytes?: number;
+  monitorWindows?: MonitorWindow[];
   platform?: string;
   streamerName?: string | null;
   title?: string | null;
@@ -269,8 +300,8 @@ export class Store {
         `INSERT INTO tasks
            (id, kind, url, platform, title, streamer_name, monitor_enabled,
             quality, segment_time_s, postprocess, max_session_s, max_session_bytes,
-            created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            monitor_windows, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -285,6 +316,7 @@ export class Store {
         input.postprocess ?? settings.defaultPostprocess,
         input.maxSessionS ?? 0,
         input.maxSessionBytes ?? 0,
+        JSON.stringify(input.monitorWindows ?? []),
         now,
         now,
       );
@@ -306,10 +338,14 @@ export class Store {
     if (patch.checkNow !== undefined) push('check_now', patch.checkNow ? 1 : 0);
     if (patch.quality !== undefined) push('quality', patch.quality);
     if (patch.qualityOptions !== undefined) push('quality_options', JSON.stringify(patch.qualityOptions));
+    if (patch.qualityActual !== undefined) {
+      push('quality_actual', patch.qualityActual === null ? null : JSON.stringify(patch.qualityActual));
+    }
     if (patch.segmentTimeS !== undefined) push('segment_time_s', patch.segmentTimeS);
     if (patch.postprocess !== undefined) push('postprocess', patch.postprocess);
     if (patch.maxSessionS !== undefined) push('max_session_s', patch.maxSessionS);
     if (patch.maxSessionBytes !== undefined) push('max_session_bytes', patch.maxSessionBytes);
+    if (patch.monitorWindows !== undefined) push('monitor_windows', JSON.stringify(patch.monitorWindows));
     if (patch.platform !== undefined) push('platform', patch.platform);
     if (patch.streamerName !== undefined) push('streamer_name', patch.streamerName);
     if (patch.title !== undefined) push('title', patch.title);
@@ -386,6 +422,18 @@ export class Store {
 
   listOpenSessions(): Session[] {
     return (this.db.prepare('SELECT * FROM sessions WHERE ended_at IS NULL').all() as Row[]).map(toSession);
+  }
+
+  /**
+   * 该任务最近若干场的**开始时刻**（只需时间，不用整行）。
+   * 轮询节奏据此推断"这主播平时几点开播" —— 冷时段拉长间隔，是降低平台风控
+   * 暴露最直接的手段（24h×30s = 2880 次/天，抖音已经为此报过一次风控）。
+   */
+  listSessionStarts(taskId: string, limit = 60): string[] {
+    const rows = this.db
+      .prepare('SELECT started_at FROM sessions WHERE task_id = ? ORDER BY started_at DESC LIMIT ?')
+      .all(taskId, Math.min(Math.max(limit, 1), 500)) as Row[];
+    return rows.map((r) => str(r['started_at']));
   }
 
   listRecentSessionsForTask(taskId: string, limit = 20): Session[] {
@@ -499,16 +547,88 @@ export class Store {
     }));
   }
 
+  // ── 跨会话合并 ────────────────────────────────────────────────────────────
+
+  createMergeJob(sessionIds: string[]): MergeJob {
+    const id = randomUUID().replace(/-/g, '');
+    this.db
+      .prepare(
+        `INSERT INTO merge_jobs (id, session_ids, status, outputs, gaps, planned, done, progress, message, created_at, started_at, ended_at)
+         VALUES (?, ?, 'queued', '[]', '[]', 0, 0, 0, NULL, ?, NULL, NULL)`,
+      )
+      .run(id, JSON.stringify(sessionIds), new Date().toISOString());
+    const created = this.getMergeJob(id);
+    if (created === undefined) throw new Error('插入合并任务后读不到该行');
+    return created;
+  }
+
+  getMergeJob(id: string): MergeJob | undefined {
+    const row = this.db.prepare('SELECT * FROM merge_jobs WHERE id = ?').get(id) as Row | undefined;
+    return row === undefined ? undefined : toMergeJob(row);
+  }
+
+  listMergeJobs(limit = 20): MergeJob[] {
+    const rows = this.db
+      .prepare('SELECT * FROM merge_jobs ORDER BY created_at DESC, id DESC LIMIT ?')
+      .all(Math.min(Math.max(limit, 1), 200)) as Row[];
+    return rows.map(toMergeJob);
+  }
+
+  /** 排队/合并中的任务：重启后要接着跑（进程死在半路不能留下永远"合并中"的行） */
+  listUnfinishedMergeJobs(): MergeJob[] {
+    return (
+      this.db.prepare("SELECT * FROM merge_jobs WHERE status IN ('queued', 'running')").all() as Row[]
+    ).map(toMergeJob);
+  }
+
+  updateMergeJob(
+    id: string,
+    patch: {
+      status?: MergeStatus;
+      outputs?: MergeOutput[];
+      gaps?: MergeGap[];
+      planned?: number;
+      done?: number;
+      progress?: number;
+      message?: string | null;
+      startedAt?: string | null;
+      endedAt?: string | null;
+    },
+  ): MergeJob {
+    const sets: string[] = [];
+    const values: (string | number | null)[] = [];
+    const push = (col: string, value: string | number | null): void => {
+      sets.push(`${col} = ?`);
+      values.push(value);
+    };
+    if (patch.status !== undefined) push('status', patch.status);
+    if (patch.outputs !== undefined) push('outputs', JSON.stringify(patch.outputs));
+    if (patch.gaps !== undefined) push('gaps', JSON.stringify(patch.gaps));
+    if (patch.planned !== undefined) push('planned', patch.planned);
+    if (patch.done !== undefined) push('done', patch.done);
+    if (patch.progress !== undefined) push('progress', patch.progress);
+    if (patch.message !== undefined) push('message', patch.message);
+    if (patch.startedAt !== undefined) push('started_at', patch.startedAt);
+    if (patch.endedAt !== undefined) push('ended_at', patch.endedAt);
+    if (sets.length > 0) {
+      this.db.prepare(`UPDATE merge_jobs SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+    }
+    const updated = this.getMergeJob(id);
+    if (updated === undefined) throw new Error(`合并任务不存在：${id}`);
+    return updated;
+  }
+
   // ── events ───────────────────────────────────────────────────────────────
 
   insertEvent(input: EventInput): number {
     const info = this.db
-      .prepare('INSERT INTO events (ts, task_id, session_id, kind, payload) VALUES (?, ?, ?, ?, ?)')
+      .prepare('INSERT INTO events (ts, task_id, session_id, kind, class, payload) VALUES (?, ?, ?, ?, ?, ?)')
       .run(
         new Date().toISOString(),
         input.taskId ?? null,
         input.sessionId ?? null,
         input.kind,
+        eventClassOf(input.kind),
         JSON.stringify(input.payload ?? {}),
       );
     return Number(info.lastInsertRowid);
@@ -523,6 +643,89 @@ export class Store {
             .prepare('SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?')
             .all(opts.since, limit) as Row[]);
     return rows.map(toEvent);
+  }
+
+  /**
+   * 某个会话的时间线。必须按 session_id 直接查 —— 之前是"捞最新 1000 条再过滤"，
+   * 事件一多，老会话的事件就会静默消失（归档修不了这个，只有换查询才行）。
+   */
+  listSessionEvents(sessionId: string, opts: { limit?: number; before?: number } = {}): EventRow[] {
+    const limit = Math.min(Math.max(opts.limit ?? 200, 1), 500);
+    const rows =
+      opts.before === undefined
+        ? (this.db
+            .prepare('SELECT * FROM events WHERE session_id = ? ORDER BY id DESC LIMIT ?')
+            .all(sessionId, limit) as Row[])
+        : (this.db
+            .prepare('SELECT * FROM events WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?')
+            .all(sessionId, opts.before, limit) as Row[]);
+    return rows.map(toEvent).reverse();
+  }
+
+  /** 保留期执行器要删的那些行（先取出来归档，再按 id 删） */
+  listExpiredEvents(cls: EventClass, beforeIso: string, limit: number): EventRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM events WHERE class = ? AND ts < ? ORDER BY id ASC LIMIT ?')
+      .all(cls, beforeIso, limit) as Row[];
+    return rows.map(toEvent);
+  }
+
+  /** 按 id 精确删除：归档写了哪些行就删哪些行，不做"再算一次条件"的危险动作 */
+  deleteEventsByIds(ids: readonly number[]): number {
+    if (ids.length === 0) return 0;
+    const stmt = this.db.prepare('DELETE FROM events WHERE id = ?');
+    this.db.exec('BEGIN');
+    try {
+      for (const id of ids) stmt.run(id);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    return ids.length;
+  }
+
+  eventsInfo(): {
+    total: number;
+    process: number;
+    result: number;
+    oldestAt: string | null;
+    newestAt: string | null;
+  } {
+    const byClass = this.db
+      .prepare('SELECT class AS k, COUNT(*) AS n FROM events GROUP BY class')
+      .all() as Row[];
+    let process = 0;
+    let result = 0;
+    for (const r of byClass) {
+      if (str(r['k']) === 'process') process = num(r['n']);
+      else result = num(r['n']);
+    }
+    const span = this.db.prepare('SELECT MIN(ts) AS a, MAX(ts) AS b FROM events').get() as Row | undefined;
+    return {
+      total: process + result,
+      process,
+      result,
+      oldestAt: span === undefined ? null : strOrNull(span['a']),
+      newestAt: span === undefined ? null : strOrNull(span['b']),
+    };
+  }
+
+  /** 库文件占的字节数（页面数 × 页大小，含空闲页；DELETE 不会让它变小） */
+  dbSizeBytes(): number {
+    const page = this.db.prepare('PRAGMA page_count').get() as Row | undefined;
+    const size = this.db.prepare('PRAGMA page_size').get() as Row | undefined;
+    return num(page?.['page_count']) * num(size?.['page_size']);
+  }
+
+  /** DELETE 只是把页挂到 freelist，文件不会缩。碎片超过阈值才值得 VACUUM（会锁库）。 */
+  freePages(): number {
+    const row = this.db.prepare('PRAGMA freelist_count').get() as Row | undefined;
+    return num(row?.['freelist_count']);
+  }
+
+  compact(): void {
+    this.db.exec('VACUUM');
   }
 
   // ── runtime projection ───────────────────────────────────────────────────
