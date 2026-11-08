@@ -7,13 +7,13 @@
 > 断流两层重连、cap 切点落段边界、重合并不毁产物、恢复扫描的孤儿判定，
 > 这些行为在文档里是"一句话"，在代码里是一堆时序细节，只能靠测试钉住。
 >
-> 状态：**2026-11-04，M1–M5 + 画质可见 + 跨会话合并 + 监控时段 + 事件保留 + 轮询倒计时全部自动化项已落地并通过（210 条）**。
+> 状态：**2026-11-04，M1–M5 + 画质可见 + 跨会话合并 + 监控时段 + 事件保留 + 轮询倒计时全部自动化项已落地并通过（211 条）**。
 > 真机项（需要真实平台/设备）列在 §7，未打勾的属于交付前必须补的一次性验收。
 
 运行方式：
 
 ```bash
-pnpm test                 # 全部（vitest，22 个文件 / 210 条）
+pnpm test                 # 全部（vitest，22 个文件 / 211 条）
 pnpm lint && pnpm typecheck
 cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest discover -s tests -v   # 48 条
 ```
@@ -61,6 +61,7 @@ cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest disc
 | — | 窗口含头不含尾（19:00 进、23:00 出）；「下一次开启」要能跨到明天 | `core/schedule.test.ts` › 普通窗口 / 下一个开启时刻 |
 | — | 冷热按历史开播时刻分 24 桶：热 30s / 温 60s / 冷 180s；**样本 <3 一律按热** | `core/schedule.test.ts` › 历史开播热度 |
 | — | 久未开播每 10 轮翻倍、封顶 10 分钟；连续解析失败走指数退避（风控期间猛问会被拉黑更久） | `core/schedule.test.ts` › 连续未开播 / 连续失败 |
+| — | 放大只数**窗内**轮数：窗外那段空档不算，否则昨晚关窗前攒的 60 轮会让今晚开窗第一轮直接排到 10 分钟后（正是最该密的半小时） | `core/engine.test.ts` › 窗外那段不算进「久未开播」 |
 | — | 手动「检查 / 开始录制」**无视时段**：点了按钮没反应是最难解释的交互 | `core/engine.test.ts` › 用户点「检查」时无视时段 |
 | — | 改时段要 2 秒内重算，不能等原来那个 11 小时的长等待 | `core/engine.ts` `#waitPoll`（窗口快照比较）＋ 人工：窗外改窗口，看状态是否立刻变 |
 | — | 抖音下播是**抛异常**不是返回空：按 `waiting` 处理，不记 `error` | `core/engine.test.ts` › 主播没开播按等待处理 ＋ `plugins/…/test_adapters.py` › ended_live |

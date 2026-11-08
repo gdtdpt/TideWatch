@@ -373,6 +373,11 @@ export class Engine {
       if (!task.checkNow && !task.recordRequested && task.monitorWindows.length > 0) {
         const now = this.#clock.now();
         if (!inWindows(task.monitorWindows, now)) {
+          // 窗外不放大：「久未开播」记的是**窗内**连问没开播的轮数，窗外这一整段
+          // 空档不算。不清的话，昨晚 02:00 关窗前攒到 60 轮，今晚 19:00 开窗后
+          // 第一轮就直接排到 10 分钟后 —— 而开播前那半小时恰恰最该密。
+          // 清零后回到历史冷热档（30s / 60s / 180s），窗内再累计十轮才开始放大。
+          this.#pace(taskId).idle = 0;
           const resume = nextOpenAt(task.monitorWindows, now);
           this.#runtime(
             taskId,
@@ -1277,7 +1282,9 @@ export class Engine {
    * 固定重试（如"在播但没拿到流地址"的 5 秒）没有节奏含义，传 null。
    */
   async #waitPoll(taskId: string, ms: number, reason: PollReason | null = null): Promise<void> {
-    const deadline = Date.now() + ms;
+    // 用注入的时钟算 deadline，不用 `Date.now()`：引擎里其他每处时间都走
+    // `#clock`，只有这里混用真实时间是"测试里时钟拨不动、只能真等 10 分钟"的根源。
+    const deadline = this.#clock.now().getTime() + ms;
     this.#nextPoll.set(taskId, { at: deadline, reason });
     try {
       // 长等待（窗外可能是 11 小时）不该每 250ms 查一次库：分片随总时长放大，
@@ -1287,7 +1294,7 @@ export class Engine {
       // 时段被改过就提前醒来重算：否则用户把窗口调成"现在应该监控"，还要等到
       // 原来那个 11 小时的 deadline 才生效 —— 看起来像保存没生效。
       const windowsKey = JSON.stringify(seen?.monitorWindows ?? []);
-      while (Date.now() < deadline) {
+      while (this.#clock.now().getTime() < deadline) {
         if (!this.#running) return;
         const task = this.#d.store.getTask(taskId);
         if (task === undefined) return;

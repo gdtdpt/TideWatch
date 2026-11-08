@@ -606,4 +606,64 @@ describe('监控时段与轮询节奏', () => {
 
     expect(engine.nextPollOf(taskId)).toBeNull();
   });
+
+  // 窗外那一整段空档不该参与「久未开播」的放大：昨晚 02:00 关窗前攒到 60 轮，
+  // 今晚 19:00 开窗后第一轮就排到 10 分钟后 —— 而开播前那半小时最该密。
+  // 用可拨的时钟跑，否则要么真等 10 分钟，要么根本观察不到跨窗。
+  it('窗外那段不算进「久未开播」：回到窗前第一轮恢复基准间隔', async () => {
+    let nowMs = Date.now();
+    // 固定住"当天零点"：用 nowMs 现算的话，测试跨过午夜就会把基准日推到第二天
+    const dayStart = new Date(nowMs).setHours(0, 0, 0, 0);
+    const at = (minutes: number): number => dayStart + minutes * 60_000;
+    const m = new Date(nowMs).getHours() * 60 + new Date(nowMs).getMinutes();
+    // 时段 A 现在开着（10 分钟后关），B 在 20 分钟后 —— 中间那段是窗外
+    const clock = {
+      now: () => new Date(nowMs),
+      // 不推进虚拟时间：跑一轮要多久完全由测试用 `nextPoll` 的 deadline 决定
+      sleep: () => new Promise<void>((r) => setTimeout(r, 1)),
+    };
+    const { h, engine, taskId } = setup({ clock });
+    h.store.putSettings({ pollIntervalS: 5 });
+    h.store.patchTask(taskId, {
+      monitorWindows: [
+        { start: fmtHm(m), end: fmtHm((m + 10) % 1440) },
+        { start: fmtHm((m + 20) % 1440), end: fmtHm((m + 40) % 1440) },
+      ],
+    });
+    h.resolver.queue = [offlineOutcome()];
+
+    engine.start();
+    await waitFor(() => engine.nextPollOf(taskId) !== null, '排下一轮');
+    expect(engine.nextPollOf(taskId)?.reason).toBe('hot');
+
+    // 窗内连问十几轮没开播 → 放大到 idle_stretch（这一步是既有行为，先确认成立，
+    // 否则下面的断言等于什么都没验证）
+    const stall = async (): Promise<void> => {
+      // 刚解析完的那一瞬间还没排下一轮，先等它排上再拨表
+      await waitFor(() => engine.nextPollOf(taskId) !== null, '排下一轮');
+      const before = h.resolver.calls;
+      nowMs = (engine.nextPollOf(taskId)?.at ?? nowMs) + 100;
+      await waitFor(() => h.resolver.calls > before, '下一轮解析', 10_000);
+    };
+    for (let round = 0; round < 40 && engine.nextPollOf(taskId)?.reason !== 'idle_stretch'; round += 1) {
+      await stall();
+    }
+    const stretched = engine.nextPollOf(taskId);
+    expect(stretched?.reason).toBe('idle_stretch');
+    expect((stretched?.at ?? 0) - nowMs).toBeGreaterThan(5_000);
+
+    // 拨到 A 关掉之后、B 开之前：这一跳会触发「窗外」分支，把放大计数作废
+    nowMs = at(m + 15);
+    await waitFor(() => h.store.getRuntime(taskId)?.state === 'paused', '进入窗外暂停');
+
+    // B 开窗：第一轮回到基准间隔，不再继承昨晚那 600 秒
+    nowMs = at(m + 20) + 1_000;
+    const before = h.resolver.calls;
+    await waitFor(() => h.resolver.calls > before, '开窗后第一轮解析', 10_000);
+    await waitFor(() => engine.nextPollOf(taskId) !== null, '开窗后排下一轮');
+
+    const after = engine.nextPollOf(taskId);
+    expect(after?.reason).toBe('hot');
+    expect((after?.at ?? 0) - nowMs).toBeLessThanOrEqual(5_500);
+  });
 });
