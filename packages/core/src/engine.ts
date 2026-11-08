@@ -7,7 +7,15 @@
  * - UI 只是事件消费者：emit 失败不影响录制（这里的事件写库失败只告警）。
  */
 import { randomUUID } from 'node:crypto';
-import type { EndReason, PollPlan, QualityActual, SessionOrigin, Store, Task } from '@tidewatch/store';
+import type {
+  EndReason,
+  PollPlan,
+  PollReason,
+  QualityActual,
+  SessionOrigin,
+  Store,
+  Task,
+} from '@tidewatch/store';
 import { effectiveMaxSessionBytes, effectiveMaxSessionS, originAfter } from '@tidewatch/store';
 import {
   classifyLine,
@@ -215,6 +223,14 @@ export class Engine {
   readonly #runners = new Map<string, Runner>();
   /** 各任务的轮询节奏计数：连续未开播轮数 / 连续解析失败轮数（开播或成功即清零） */
   readonly #pacing = new Map<string, { idle: number; error: number }>();
+  /**
+   * 下一轮轮询的 deadline 与理由（`#waitPoll` 进/出时维护）。
+   *
+   * 只活在内存里：pace 本来就是进程内计数，重启后第一轮重新算出来即可。
+   * 存在的理由只有一个 —— 让任务卡能显示「下一轮 x 秒后再看」，否则 10 分钟
+   * 的间隔在界面上等于"什么都没发生"，用户无法区分"慢"和"卡住了"。
+   */
+  readonly #nextPoll = new Map<string, { at: number; reason: PollReason | null }>();
   /** 历史开播热度的缓存：每小时重算一次就够，不必每 30 秒查一遍库 */
   readonly #affinity = new Map<string, { at: number; buckets: number[] }>();
   /** 已经报过"流参数变了"的会话（同一场只说一次，收尾时清掉） */
@@ -301,6 +317,16 @@ export class Engine {
     this.#d.store.patchTask(taskId, { checkNow: true });
   }
 
+  /**
+   * 该任务下一轮什么时候看、为什么。
+   *
+   * `null` = 没在等（正在录 / 已停 / 刚从等待里醒来）。这是**运行态**，不进库：
+   * 十秒变一次的东西写进 SQLite 只会让 UI 的"变脏"信号失去意义。
+   */
+  nextPollOf(taskId: string): { at: number; reason: PollReason | null } | null {
+    return this.#nextPoll.get(taskId) ?? null;
+  }
+
   /** 宿主退出：与 SIGTERM 同一条收尾管道 */
   async stop(): Promise<void> {
     if (this.#stopped) return;
@@ -320,6 +346,8 @@ export class Engine {
         this.#logWarn(`runner 收尾超时（${budget}ms），交给宿主硬停`);
       }),
     ]);
+    // 进程要退出了，别再让 API 读到"下一轮 x 秒后"（那个 x 永远不会到来）
+    this.#nextPoll.clear();
   }
 
   // ── runner ────────────────────────────────────────────────────────────────
@@ -354,7 +382,7 @@ export class Engine {
           this.#emit('task.monitor_window', { resume_at: resume?.toISOString() ?? null }, taskId, null);
           const waitMs =
             resume === null ? this.#pollIntervalMs() : Math.max(1_000, resume.getTime() - now.getTime());
-          await this.#waitPoll(taskId, waitMs);
+          await this.#waitPoll(taskId, waitMs, resume === null ? null : 'window_closed');
           continue;
         }
       }
@@ -371,7 +399,7 @@ export class Engine {
         if (runner.stopRequested) {
           runner.stopRequested = false;
         }
-        await this.#waitPoll(taskId, this.#planFor(task, this.#clock.now()).delayMs);
+        await this.#waitPlan(task);
         continue;
       }
 
@@ -401,7 +429,7 @@ export class Engine {
           pace.error = 0;
           urlLessRounds = 0;
           this.#runtime(taskId, 'waiting', '主播未开播');
-          await this.#waitPoll(taskId, this.#planFor(task, this.#clock.now()).delayMs);
+          await this.#waitPlan(task);
           continue;
         }
 
@@ -436,11 +464,13 @@ export class Engine {
             null,
           );
         }
-        const waitMs =
-          outcome.error.retryAfterS !== undefined
-            ? Math.max(outcome.error.retryAfterS * 1000, 1_000)
-            : this.#planFor(task, this.#clock.now()).delayMs;
-        await this.#waitPoll(taskId, waitMs);
+        // 平台给了 retry_after（如"观看范围"半小时）就照它等，否则按失败退避。
+        // 前者没有"冷热"含义，`reason` 留空，别在卡片上写"该时段常开播"。
+        if (outcome.error.retryAfterS !== undefined) {
+          await this.#waitPoll(taskId, Math.max(outcome.error.retryAfterS * 1000, 1_000), null);
+        } else {
+          await this.#waitPlan(task);
+        }
         continue;
       }
 
@@ -467,7 +497,7 @@ export class Engine {
         pace.idle += 1;
         if (task.skipCurrentLive) this.#d.store.patchTask(taskId, { skipCurrentLive: false });
         this.#runtime(taskId, 'waiting', data.anchorName ?? '等待开播');
-        await this.#waitPoll(taskId, this.#planFor(task, this.#clock.now()).delayMs);
+        await this.#waitPlan(task);
         continue;
       }
 
@@ -485,7 +515,8 @@ export class Engine {
           taskId,
           null,
         );
-        await this.#waitPoll(taskId, delay);
+        // 固定重试，间隔已写在 detail 里（"5s 后重试"），不再额外挂节奏理由
+        await this.#waitPoll(taskId, delay, null);
         continue;
       }
 
@@ -499,7 +530,7 @@ export class Engine {
         this.#runtime(taskId, 'needs_dep', detail);
         this.#emit('capture.dependency_missing', { detail }, taskId, null);
         this.#draft(copy.needsDependency({ streamer: task.streamerName, runtime: detail }), taskId, null);
-        await this.#waitPoll(taskId, this.#planFor(task, this.#clock.now()).delayMs);
+        await this.#waitPlan(task);
         continue;
       }
 
@@ -521,17 +552,17 @@ export class Engine {
       if (outcomeSession.reason === 'offline') {
         lastEndReason = null;
         this.#runtime(taskId, 'waiting', '等待下一场');
-        await this.#waitPoll(taskId, this.#planFor(task, this.#clock.now()).delayMs);
+        await this.#waitPlan(task);
         continue;
       }
       if (outcomeSession.reason === 'degraded' || outcomeSession.reason === 'error') {
         this.#runtime(taskId, 'waiting', '连续失败，退避后重试');
-        await this.#waitPoll(taskId, this.#planFor(task, this.#clock.now()).delayMs);
+        await this.#waitPlan(task);
         continue;
       }
       if (outcomeSession.reason === 'disk') {
         this.#runtime(taskId, 'error', '磁盘空间不足或写入失败');
-        await this.#waitPoll(taskId, this.#planFor(task, this.#clock.now()).delayMs);
+        await this.#waitPlan(task);
         continue;
       }
       return;
@@ -1230,27 +1261,49 @@ export class Engine {
     return last;
   }
 
-  async #waitPoll(taskId: string, ms: number): Promise<void> {
+  /**
+   * 按当前节奏等一轮：算计划 → 记「下一轮」→ 等。
+   *
+   * 所有"按冷热/退避决定间隔"的等待都走这里，免得计划算一次、等待再算一次
+   * 出现两套口径（卡片上写 600 秒、实际睡 180 秒那种）。
+   */
+  async #waitPlan(task: Task): Promise<void> {
+    const plan = this.#planFor(task, this.#clock.now());
+    await this.#waitPoll(task.id, plan.delayMs, plan.reason);
+  }
+
+  /**
+   * 等到下一轮。`reason` 是这等待的来由（给任务卡解释用）：
+   * 固定重试（如"在播但没拿到流地址"的 5 秒）没有节奏含义，传 null。
+   */
+  async #waitPoll(taskId: string, ms: number, reason: PollReason | null = null): Promise<void> {
     const deadline = Date.now() + ms;
-    // 长等待（窗外可能是 11 小时）不该每 250ms 查一次库：分片随总时长放大，
-    // 但压到 2 秒以内 —— 用户点「检查」的响应延迟就是这个量级。
-    const slice = Math.min(2_000, Math.max(SLICE_MS, ms / 60));
-    const seen = this.#d.store.getTask(taskId);
-    // 时段被改过就提前醒来重算：否则用户把窗口调成"现在应该监控"，还要等到
-    // 原来那个 11 小时的 deadline 才生效 —— 看起来像保存没生效。
-    const windowsKey = JSON.stringify(seen?.monitorWindows ?? []);
-    while (Date.now() < deadline) {
-      if (!this.#running) return;
-      const task = this.#d.store.getTask(taskId);
-      if (task === undefined) return;
-      if (task.checkNow) {
-        // 不在这里消费：主循环的 takeCheckNow 要负责发 `task.check_now` 事件，
-        // 而且窗口判断也要靠这个标记放行（否则点了「检查」被时段挡住，用户以为按钮坏了）。
-        return;
+    this.#nextPoll.set(taskId, { at: deadline, reason });
+    try {
+      // 长等待（窗外可能是 11 小时）不该每 250ms 查一次库：分片随总时长放大，
+      // 但压到 2 秒以内 —— 用户点「检查」的响应延迟就是这个量级。
+      const slice = Math.min(2_000, Math.max(SLICE_MS, ms / 60));
+      const seen = this.#d.store.getTask(taskId);
+      // 时段被改过就提前醒来重算：否则用户把窗口调成"现在应该监控"，还要等到
+      // 原来那个 11 小时的 deadline 才生效 —— 看起来像保存没生效。
+      const windowsKey = JSON.stringify(seen?.monitorWindows ?? []);
+      while (Date.now() < deadline) {
+        if (!this.#running) return;
+        const task = this.#d.store.getTask(taskId);
+        if (task === undefined) return;
+        if (task.checkNow) {
+          // 不在这里消费：主循环的 takeCheckNow 要负责发 `task.check_now` 事件，
+          // 而且窗口判断也要靠这个标记放行（否则点了「检查」被时段挡住，用户以为按钮坏了）。
+          return;
+        }
+        if (JSON.stringify(task.monitorWindows) !== windowsKey) return;
+        if (!task.monitorEnabled && !task.recordRequested) return;
+        await this.#sleep(slice);
       }
-      if (JSON.stringify(task.monitorWindows) !== windowsKey) return;
-      if (!task.monitorEnabled && !task.recordRequested) return;
-      await this.#sleep(slice);
+    } finally {
+      // 醒来的那一刻就不再"等下一轮"了：后面要么立刻解析（卡片该显示"正在检查"），
+      // 要么进录制（显示本场时长）。留着旧 deadline 会变成倒计时停在 0。
+      this.#nextPoll.delete(taskId);
     }
   }
 

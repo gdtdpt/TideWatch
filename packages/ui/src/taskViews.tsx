@@ -3,7 +3,7 @@
  * 总览只放最近几条，任务页放全量 —— 两份界面共用同一套组件，
  * 免得密度、措辞、按钮行为各改一遍后两边不一致。
  */
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   api,
   ApiError,
@@ -30,6 +30,42 @@ function fmtElapsed(seconds: number): string {
 }
 
 const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/**
+ * 轮询节奏的人话：只解释"**为什么**这么久"，具体多久交给倒计时。
+ *
+ * 引擎侧的 `describeReason()` 是另一套措辞（"该时段平时不开播，180 秒后再看"），
+ * 那种字符串写死了秒数，放在一个每秒变化的倒计时旁边早晚会自相矛盾。
+ */
+const NEXT_POLL_HINT: Record<string, string> = {
+  hot: '该时段常开播',
+  warm: '该时段偶尔开播',
+  cold: '该时段平时不开播',
+  idle_stretch: '久未开播，已放慢',
+  error_backoff: '上次解析失败，退避中',
+};
+
+/**
+ * 倒计时文本。
+ *
+ * 一分钟以内给到秒（`42 秒`，每秒变一次是对的：那正是"马上要看"的时段）；
+ * 一分钟以上按 10 秒取整 —— 显示 `9 分 58 秒`、`9 分 57 秒` 只是噪音，
+ * 而每跳一次数字都会让整行重新排一次版。
+ */
+function fmtCountdown(ms: number): string {
+  const t = Math.max(0, Math.ceil(ms / 1000));
+  if (t < 60) return `${String(t)} 秒`;
+  const rounded = Math.ceil(t / 10) * 10;
+  const m = Math.floor(rounded / 60);
+  const s = rounded % 60;
+  return s === 0 ? `${String(m)} 分` : `${String(m)} 分 ${String(s)} 秒`;
+}
+
+/** 本地 HH:MM（"下一轮 12:34"，用于悬停说明） */
+function fmtClock(ms: number): string {
+  const d = new Date(ms);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
 
 /**
  * 新增时段的默认值：**接在最后一段结束之后两小时**。
@@ -252,6 +288,59 @@ export function TaskRow({
   // 画质单独渲染：降级要用琥珀色标出来，和普通标记拼在一个字符串里做不到
   const quality = qualityMark(task, runtime.detail);
 
+  /**
+   * 「下一轮 x 秒后再看」。
+   *
+   * 没有它，10 分钟的空档在界面上和"卡住了"长得一模一样。三段都不显示：
+   * 正在录（有本场时长）、窗外（detail 已经写了"几点恢复"）、引擎没在等。
+   */
+  const nextPoll = task.nextPoll;
+  const nextAt = nextPoll === null ? null : Date.parse(nextPoll.at);
+  const showNext =
+    nextPoll !== null &&
+    nextAt !== null &&
+    Number.isFinite(nextAt) &&
+    !recording &&
+    nextPoll.reason !== 'window_closed';
+  const hint = nextPoll?.reason == null ? null : (NEXT_POLL_HINT[nextPoll.reason] ?? null);
+
+  /**
+   * 到点自己拉一次数据（没有推送可等）。
+   *
+   * 下一轮解析如果结论没变（还是"主播未开播"），引擎按设计不再写投影、也不发事件 ——
+   * 光等推送的话，卡片会停在"正在检查"，或者干脆空着：
+   *
+   * - 倒计时到点 → 拉一次，拿新的 deadline；
+   * - 拉回来的 `nextPoll` 恰好落在引擎"刚醒来、还没排下一轮"的那一两秒里 →
+   *   是个 null。所以**等待类状态**下即使没有 deadline 也要隔一会儿再问，
+   *   直到拿到新的为止（5s → 10s → … → 60s 封顶）。
+   *
+   * 代价是一个 GET /api/tasks，而且只在"任务在等、界面又没东西可显示"的时候发生。
+   * `onChanged` 每次渲染都是新函数，不能进依赖：那会让计时器每秒被清掉重建，
+   * 永远等不到触发。
+   */
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+  const waitingLike =
+    task.monitorEnabled &&
+    !recording &&
+    (runtime.state === 'waiting' || runtime.state === 'snoozed' || runtime.state === 'blocked' || runtime.state === 'error');
+  const [overdueTries, setOverdueTries] = useState(0);
+  useEffect(() => {
+    setOverdueTries(0);
+  }, [nextAt]);
+  useEffect(() => {
+    const left = nextAt === null || !Number.isFinite(nextAt) ? null : nextAt - Date.now();
+    const scheduled = left !== null && left > 0;
+    if (!scheduled && !waitingLike) return undefined;
+    const delay = scheduled && left !== null ? left + 1_000 : Math.min(60_000, 5_000 * 2 ** overdueTries);
+    const timer = window.setTimeout(() => {
+      if (!scheduled) setOverdueTries((n) => n + 1);
+      onChangedRef.current();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [nextAt, overdueTries, waitingLike]);
+
   return (
     <li
       className={`rounded-xl border p-2 transition ${
@@ -307,6 +396,16 @@ export function TaskRow({
         )}
         {marks.length > 0 && <span className="shrink-0 text-neutral-600">· {marks.join(' · ')}</span>}
       </div>
+
+      {nextAt !== null && showNext && (
+        <p
+          className="mt-0.5 truncate text-[11px] text-neutral-500"
+          title={`下一次解析 ${fmtClock(nextAt)}${hint === null ? '' : `（${hint}）`}`}
+        >
+          {nextAt > now ? `下一轮 ${fmtCountdown(nextAt - now)}后再看` : '下一轮正在检查…'}
+          {hint !== null && <span className="text-neutral-600"> · {hint}</span>}
+        </p>
+      )}
 
       <div className="mt-1.5 flex items-center gap-1.5">
         <Button

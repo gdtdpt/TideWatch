@@ -561,4 +561,49 @@ describe('监控时段与轮询节奏', () => {
     expect(note?.title).toBe('无法进房');
     expect(note?.body).toContain('半小时');
   });
+
+  // 「下一轮 x 秒后再看」的数据源。它不是装饰：10 分钟的间隔如果界面上什么都
+  // 不显示，用户没法区分"按节奏在等"和"卡死了"。
+  it('窗外等待时能报出恢复时刻（reason=window_closed）', async () => {
+    const { h, engine, taskId } = setup();
+    windowInFuture(taskId, h.store, 2);
+
+    engine.start();
+    await waitFor(() => h.store.getRuntime(taskId)?.state === 'paused', '进入暂停');
+    await waitFor(() => engine.nextPollOf(taskId) !== null, '排下一轮');
+
+    const next = engine.nextPollOf(taskId);
+    expect(next?.reason).toBe('window_closed');
+    // 窗口 2 分钟后才开；时段只到分钟精度，两边各留一分钟余量
+    const left = (next?.at ?? 0) - Date.now();
+    expect(left).toBeGreaterThan(60_000);
+    expect(left).toBeLessThan(4 * 60_000);
+  });
+
+  it('窗内未开播按基准间隔排下一轮（reason=hot）', async () => {
+    const { h, engine, taskId } = setup();
+    h.store.putSettings({ pollIntervalS: 5 });
+    h.resolver.queue = [offlineOutcome()];
+
+    engine.start();
+    await waitFor(() => engine.nextPollOf(taskId) !== null, '排下一轮');
+
+    const next = engine.nextPollOf(taskId);
+    // 样本不足 3 场时按"热"处理：新任务不该一上来就被当成冷时段
+    expect(next?.reason).toBe('hot');
+    const left = (next?.at ?? 0) - Date.now();
+    expect(left).toBeLessThanOrEqual(5_500);
+    expect(left).toBeGreaterThan(0);
+  });
+
+  it('引擎停下后不再报下一轮（那个时刻永远不会到来）', async () => {
+    const { h, engine, taskId } = setup();
+    h.resolver.queue = [offlineOutcome()];
+
+    engine.start();
+    await waitFor(() => engine.nextPollOf(taskId) !== null, '排下一轮');
+    await engine.stop();
+
+    expect(engine.nextPollOf(taskId)).toBeNull();
+  });
 });

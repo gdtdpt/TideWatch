@@ -21,10 +21,14 @@ const bool = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : 
 export function taskView(service: TidewatchService, task: Task): Record<string, unknown> {
   const runtime = service.store.getRuntime(task.id);
   const latest = service.store.listSessions({ taskId: task.id, limit: 1 })[0] ?? null;
+  // 下一轮轮询（引擎内存里的 deadline）：卡片据此显示「下一轮 x 秒后再看」。
+  // 不是库里的字段 —— 它只对"现在这段等待"有意义，重启/开始录制后就该消失。
+  const next = service.engine.nextPollOf(task.id);
   return {
     ...task,
     runtime: runtime ?? { taskId: task.id, state: 'idle', detail: null, updatedAt: task.updatedAt },
     latestSession: latest,
+    nextPoll: next === null ? null : { at: new Date(next.at).toISOString(), reason: next.reason },
   };
 }
 

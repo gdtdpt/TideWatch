@@ -95,6 +95,15 @@ export interface Runtime {
 }
 
 /**
+ * 下一轮轮询。`reason` 是引擎给的理由（`null` = 固定重试，没有"冷热"含义）。
+ * 它只在"这段等待里"存在：开始录制或停下来之后就没了。
+ */
+export interface NextPoll {
+  at: string;
+  reason: string | null;
+}
+
+/**
  * 「实际拿到的画质」——与 `Task.quality`（请求值）分开。
  * 平台会静默降级（请求原画只给高清且不报错），所以两者都要能看见。
  */
@@ -137,6 +146,7 @@ export interface Task {
   updatedAt: string;
   runtime: Runtime;
   latestSession: Session | null;
+  nextPoll: NextPoll | null;
 }
 
 export interface Session {
