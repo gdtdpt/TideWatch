@@ -18,6 +18,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent
@@ -461,6 +462,109 @@ class VodActions(unittest.TestCase):
         }))
         self.assertEqual(st["quality"], "64")
         self.assertIsInstance(st["quality"], str)
+
+
+class BilibiliLivenessTest(unittest.TestCase):
+    """B站「在不在播」必须由平台接口给结论，不能从 streamget 的空结果推。
+
+    2026-11-15 真机：把任务 proxy 指向死端口（等价于本机断网），界面显示"主播未开播"。
+    根因是 `fetch_web_stream_data` 把连接异常**吞掉**返回 `{}` → `is_live=False` ——
+    断网、风控、平台改版全都长得像"主播没开播"，正在录的场次还会被当成下播收尾。
+
+    这里锁四件事：
+      1. 平台说 `live_status=0` → 仍正常回"未开播"（别为了修断网把正常路径搞坏）；
+      2. 断网 → resolve **抛异常**（宿主分类成 NETWORK），而不是 is_live=False；
+      3. 平台说在播、streamget 漏了 → 以平台为准，返可录地址；
+      4. 老接口已拿到流时，新接口失败不连坐（宁可画质低也别丢掉整场）。
+    """
+
+    ROOM = "https://live.bilibili.com/6"
+
+    def _patch(self, api_payload=None, api_exc=None, streamget_live=False, streamget_url=None):
+        class FakeLS:
+            def __init__(self, **kw):
+                self.proxy_addr = kw.get("proxy_addr")
+                self.pc_headers = {}
+
+            async def fetch_web_stream_data(self, url=None):
+                # 断网时的真实表现：异常被吞，返回空 dict（不是抛）
+                return {}
+
+            async def fetch_stream_url(self, json_data, quality):
+                return SimpleNamespace(
+                    is_live=streamget_live,
+                    anchor_name="老猫鱼不吃鱼" if streamget_live else None,
+                    title="直播中" if streamget_live else None,
+                    flv_url=streamget_url,
+                    m3u8_url=None,
+                    record_url=streamget_url,
+                    quality="原画" if streamget_live else None,
+                    extra={},
+                    new_cookies=None,
+                )
+
+        async def fake_api(api, **kw):
+            if api_exc is not None:
+                raise api_exc
+            return json.dumps(api_payload)
+
+        self._set("streamget", SimpleNamespace(BilibiliLiveStream=FakeLS))
+        self._set("async_req", fake_api)
+
+    def _set(self, name, value):
+        original = getattr(adapters, name)
+        setattr(adapters, name, value)
+        self.addCleanup(setattr, adapters, name, original)
+
+    @staticmethod
+    def _payload(live_status: int) -> dict:
+        data: dict = {"live_status": live_status}
+        if live_status == 1:
+            data["playurl_info"] = {"playurl": playurl_of(load("bili_playinfo_room6.json"))}
+        return {"code": 0, "message": "OK", "data": data}
+
+    def test_offline_room_is_still_reported_as_not_live(self):
+        self._patch(self._payload(live_status=0))
+        got = adapters.resolve({"id": "1", "url": self.ROOM, "platform": "bilibili"})
+        self.assertFalse(got["is_live"])
+        self.assertEqual(got["quality_options"], [])
+
+    def test_network_failure_is_not_swallowed_into_not_live(self):
+        """这条就是病根：以前这里返回 is_live=False（"主播没开播"）。"""
+        self._patch(api_exc=ConnectionError("proxy dead"))
+        with self.assertRaises(ConnectionError):
+            adapters.resolve({"id": "1", "url": self.ROOM, "platform": "bilibili"})
+        # 宿主靠这个分类决定卡片文案：NETWORK → "网络异常"
+        code, _, retryable, _ = adapters.classify_exception(ConnectionError("proxy dead"))
+        self.assertEqual(code, "NETWORK")
+        self.assertTrue(retryable)
+
+    def test_platform_says_live_even_when_streamget_missed_it(self):
+        self._patch(self._payload(live_status=1))
+        got = adapters.resolve({"id": "1", "url": self.ROOM, "platform": "bilibili"})
+        self.assertTrue(got["is_live"], "平台说在播，就不能记成未开播")
+        self.assertTrue(got["record_url"].startswith("https://"))
+        self.assertEqual(got["quality_actual"]["qn"], 10000)
+        self.assertEqual(got["quality_options"], ["原画", "超清"])
+
+    def test_platform_without_an_answer_is_an_error_not_not_live(self):
+        """-352 风控：平台**没给结论**，不能冒充"没开播"，也不能退避 10 分钟。"""
+        self._patch({"code": -352, "message": "-352"})
+        with self.assertRaises(adapters.PluginError) as cm:
+            adapters.resolve({"id": "1", "url": self.ROOM, "platform": "bilibili"})
+        self.assertEqual(cm.exception.code, "RATE_LIMITED")
+        self.assertEqual(cm.exception.retry_after_s, 60)
+
+    def test_streamget_stream_still_wins_when_enhancement_fails(self):
+        """老接口已经拿到流时，新接口失败不连坐 —— 可用性优先于画质。"""
+        self._patch(
+            api_exc=ConnectionError("proxy dead"),
+            streamget_live=True,
+            streamget_url="https://cdn.example/low.flv",
+        )
+        got = adapters.resolve({"id": "1", "url": self.ROOM, "platform": "bilibili"})
+        self.assertTrue(got["is_live"])
+        self.assertEqual(got["record_url"], "https://cdn.example/low.flv")
 
 
 class ClassifyExceptionTest(unittest.TestCase):

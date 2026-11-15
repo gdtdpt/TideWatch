@@ -85,7 +85,9 @@ export type RuntimeState =
   /** 不在监控时段：一次请求都不发 */
   | 'paused'
   /** 平台拒绝进房（观看范围 / 付费直播） */
-  | 'blocked';
+  | 'blocked'
+  /** 连不上平台（本机断网 / 代理不可用）：与"任务出错"分开，一恢复会全部自愈 */
+  | 'network';
 
 export interface Runtime {
   taskId: string;
@@ -356,6 +358,7 @@ export const STATE_LABEL: Record<string, string> = {
   unsupported: '平台未支持',
   paused: '不在监控时段',
   blocked: '无法观看',
+  network: '网络异常',
 };
 
 export const INTEGRITY_LABEL: Record<string, string> = {

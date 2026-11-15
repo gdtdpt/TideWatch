@@ -82,13 +82,20 @@ export const FAIL_STREAK_LIMIT = 5;
 export const URL_LESS_FAST_ROUNDS = 6;
 export const URL_LESS_FAST_DELAY_MS = 5_000;
 
-export type ResolveFaultKind = 'needs_auth' | 'needs_dep' | 'unsupported' | 'not_live' | 'restricted' | 'other';
+export type ResolveFaultKind =
+  | 'needs_auth'
+  | 'needs_dep'
+  | 'unsupported'
+  | 'not_live'
+  | 'restricted'
+  | 'network'
+  | 'other';
 
 export interface ResolveFault {
   kind: ResolveFaultKind;
   /** 是否需要"人去办一件事"（换状态 + 专用事件 + 退避一轮） */
   needsAction: boolean;
-  state: 'needs_auth' | 'needs_dep' | 'unsupported' | 'waiting' | 'blocked' | 'error';
+  state: 'needs_auth' | 'needs_dep' | 'unsupported' | 'waiting' | 'blocked' | 'error' | 'network';
   eventKind: string;
 }
 
@@ -113,6 +120,13 @@ export function resolveFault(code: PluginErrorCode | 'TIMEOUT'): ResolveFault {
     // 状态与 error 分开，UI 才能说清"为什么录不了"，退避也走半小时一档。
     case 'RESTRICTED':
       return { kind: 'restricted', needsAction: true, state: 'blocked', eventKind: 'plugin.restricted' };
+    // 连不上平台：本机断网、代理挂了、或响应空/畸形（2026-11-14 真机：断网时
+    // 十个任务全显示"解析错误"，用户以为程序坏了，实际是网线）。
+    // 单独一个状态，界面才敢说"网络异常"而不是"任务出错"；退避上限也短得多，
+    // 网一回来要能在一两分钟内自愈，而不是继续睡满 10 分钟。
+    case 'NETWORK':
+    case 'TIMEOUT':
+      return { kind: 'network', needsAction: false, state: 'network', eventKind: 'plugin.network_err' };
     default:
       return { kind: 'other', needsAction: false, state: 'error', eventKind: 'plugin.resolve_err' };
   }

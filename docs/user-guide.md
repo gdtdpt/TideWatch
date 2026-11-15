@@ -463,6 +463,7 @@ node packages/server/dist/cli.js serve     # 会生成新的并打印
 | `unsupported` | 平台未支持 | 没有插件认领这个地址 |
 | `paused` | 不在监控时段 | 窗外，不发任何请求，到点自动恢复 |
 | `blocked` | 无法观看 | 平台拒绝进房（主播设了观看范围 / 付费直播），半小时后再试 |
+| `network` | 网络异常 | **连不上平台**：本机断网、代理挂了，或平台返回了空/畸形响应。退避封顶 2 分钟，网络一恢复所有任务同时自愈 |
 
 ### 6.2 一场的生命周期
 
@@ -515,7 +516,7 @@ daemon 启动时会做一次**恢复扫描**：读每个会话目录里的 manif
 | 优先级 | 条件 | 间隔 |
 |---|---|---|
 | 1 | 不在监控时段 | **不发请求**，睡到下一个时段开始 |
-| 2 | 连续解析失败 ≥ 2 次 | 30s → 60s → 120s … 封顶 10 分钟 |
+| 2 | 连续解析失败 ≥ 2 次 | 30s → 60s → 120s … 封顶 10 分钟；**断网**（`NETWORK`）封顶只要 2 分钟 —— 请求本来也发不出去，网一回来要尽快接上 |
 | 3 | 历史该小时开播 ≥ 2 次（热） | 基准间隔（默认 30s） |
 | 4 | 历史该小时开播 1 次（温） | 至少 60s |
 | 5 | 历史该小时从没开播（冷） | 180s |
@@ -813,7 +814,7 @@ tsx/Node 版本一致时不用动数据库；schema 由内置迁移自动升级�
 | 类别 | 典型 kind | 默认保留 | 为什么 |
 |---|---|---|---|
 | 结果事件 | `session.started/ended/capped`、`merge.*`、`recovery.*`、`plugin.auth_required` | **90 天** | 几个月后还会被翻："这场为什么没录成" |
-| 过程事件 | `task.state_changed`、`recording.stderr`、`recording.segment_started`、`plugin.resolve_err` | **7 天** | 只对"当时发生了什么"有用，过期就是噪声 |
+| 过程事件 | `task.state_changed`、`recording.stderr`、`recording.segment_started`、`plugin.resolve_err`、`plugin.network_err` | **7 天** | 只对"当时发生了什么"有用，过期就是噪声 |
 
 过期行**先归档、再删除**：写不出去就整批不删（宁可库大，也不把唯一证据弄丢）。
 
@@ -885,6 +886,7 @@ WebSocket —— 但那条路要求网关支持 `Upgrade`，未必更省事。
 |---|---|---|
 | 页面能开，但接口全 401 | token 来自另一个数据根 | 看启动横幅的「数据根」，`cat <它>/auth-token.txt`；或统一用 `-d` |
 | 粘 token 一直 401，日志里能登录成功 | 你在运行中删过 token 文件 | 重启 daemon（CLI 现在会提示这一点） |
+| **所有任务同时**变成「网络异常」 | 本机断网 / 代理不可用，不是任务坏了 | 先 `curl -sS -o /dev/null -w '%{http_code}\n' 'https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=6&platform=web&ptype=8'` 验出口（能打出 200 就是网络通）；有代理时确认 `HTTP_PROXY` 指向的代理还活着。网络恢复后无需操作 |
 | 任务卡在 `needs_dep` | ffmpeg / python 找不到 | 「设置 → 运行环境」看来源；`pnpm fetch:ffmpeg`；或 `TIDEWATCH_FFMPEG` |
 | 任务报 **「插件未响应就退出」** | Python 版本太低（多半是 macOS 自带的 3.9） | `python3 -V` 确认；装 3.12/3.13，用 `TIDEWATCH_PYTHON=/usr/local/bin/python3.12` 重启 daemon（§2.4） |
 | 插件起来了但报 `No module named streamget` | `site-packages/` 没装（它不在仓库里） | 按 §2.4 用 `pip install -r requirements.lock --target …` 装一次 |

@@ -17,6 +17,7 @@ import {
   parseHm,
   planPoll,
   sanitizeWindows,
+  NETWORK_BACKOFF_CAP_MS,
   POLL_CAP_MS,
   POLL_COLD_MS,
   POLL_WARM_MIN_MS,
@@ -353,6 +354,23 @@ describe('轮询节奏', () => {
       baseMs: BASE,
     });
     expect(many.delayMs).toBe(POLL_CAP_MS);
+  });
+
+  // 断网时请求根本发不出去，多问几次不花钱；但网一恢复必须尽快发现，
+  // 否则还要再睡 10 分钟，正好把主播刚开播那几分钟睡掉。
+  it('断网（errorKind=network）退避封顶 2 分钟，理由也换成 network_backoff', () => {
+    const plan = planPoll({
+      now: at(20, 0),
+      windows: [],
+      affinity: empty,
+      idleRounds: 0,
+      errorStreak: 20,
+      baseMs: BASE,
+      errorKind: 'network',
+    });
+    expect(plan.reason).toBe('network_backoff');
+    expect(plan.delayMs).toBe(NETWORK_BACKOFF_CAP_MS);
+    expect(NETWORK_BACKOFF_CAP_MS).toBeLessThan(POLL_CAP_MS);
   });
 
   it('窗内的优先级高于冷热：窗口外即使热也不请求', () => {

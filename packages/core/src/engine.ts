@@ -222,7 +222,7 @@ export class Engine {
   readonly #mono: () => number;
   readonly #runners = new Map<string, Runner>();
   /** 各任务的轮询节奏计数：连续未开播轮数 / 连续解析失败轮数（开播或成功即清零） */
-  readonly #pacing = new Map<string, { idle: number; error: number }>();
+  readonly #pacing = new Map<string, { idle: number; error: number; network: boolean }>();
   /**
    * 下一轮轮询的 deadline 与理由（`#waitPoll` 进/出时维护）。
    *
@@ -432,6 +432,7 @@ export class Engine {
         if (fault.kind === 'not_live') {
           pace.idle += 1;
           pace.error = 0;
+          pace.network = false;
           urlLessRounds = 0;
           this.#runtime(taskId, 'waiting', '主播未开播');
           await this.#waitPlan(task);
@@ -439,10 +440,18 @@ export class Engine {
         }
 
         pace.error += 1;
+        // 记住这串失败是不是"发不出去"（断网）：只影响退避上限，不影响状态文案
+        pace.network = fault.kind === 'network';
         // 平台原文（"你不在主播设置的可见范围内，无法进入TA的直播间"）不放进卡片：
         // 卡片只有一行，截断后只剩半句"可见范围"，反而看不清该干嘛。原始错误进事件表。
+        // 网络故障同理：`Expecting value: line 1 column 2 (char 1)` 是 Python 吐的
+        // JSON 解析异常，对用户没有任何意义 —— 卡片上要给的是"该去动什么"。
         const detail =
-          fault.kind === 'restricted' ? '主播限制了观看范围，半小时后再试' : outcome.error.message;
+          fault.kind === 'restricted'
+            ? '主播限制了观看范围，半小时后再试'
+            : fault.kind === 'network'
+              ? '连不上平台，检查本机网络或代理'
+              : outcome.error.message;
         // 同一个错误连续十几轮（网络没恢复、cookie 没换）只记第一条：
         // 投影没变就说明"还是同一个问题"，重复记只是把表撑大
         const changed = this.#runtime(taskId, fault.state, detail);
@@ -482,6 +491,7 @@ export class Engine {
       const data = outcome.data;
       const pace = this.#pace(taskId);
       pace.error = 0;
+      pace.network = false;
       this.#applyQuality(task, data);
       if (data.platform.length > 0 && data.platform !== task.platform) {
         this.#d.store.patchTask(taskId, { platform: data.platform });
@@ -1377,10 +1387,10 @@ export class Engine {
   // ── 轮询节奏 ──────────────────────────────────────────────────────────────
 
   /** 该任务的"连续未开播 / 连续失败"计数（进程内，重启归零可以接受） */
-  #pace(taskId: string): { idle: number; error: number } {
+  #pace(taskId: string): { idle: number; error: number; network: boolean } {
     let p = this.#pacing.get(taskId);
     if (p === undefined) {
-      p = { idle: 0, error: 0 };
+      p = { idle: 0, error: 0, network: false };
       this.#pacing.set(taskId, p);
     }
     return p;
@@ -1406,6 +1416,7 @@ export class Engine {
       idleRounds: pace.idle,
       errorStreak: pace.error,
       baseMs: this.#pollIntervalMs(),
+      errorKind: pace.network ? 'network' : 'other',
     });
   }
 

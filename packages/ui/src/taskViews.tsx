@@ -43,6 +43,7 @@ const NEXT_POLL_HINT: Record<string, string> = {
   cold: '该时段平时不开播',
   idle_stretch: '久未开播，已放慢',
   error_backoff: '上次解析失败，退避中',
+  network_backoff: '网络不通，等它自己恢复',
 };
 
 /**
@@ -139,7 +140,7 @@ export function stateTone(state: string): Tone {
   // 不在时段 / 已暂停不是错误：它们都是"按预期没在动"，涂红会让人以为出了事
   if (state === 'waiting' || state === 'snoozed' || state === 'idle' || state === 'paused') return 'neutral';
   // 平台拒绝进房也不是我们的故障，但需要人知道，用警告色
-  if (state === 'blocked') return 'warn';
+  if (state === 'blocked' || state === 'network') return 'warn';
   return 'error';
 }
 
@@ -158,7 +159,14 @@ export const TIER_LABEL: Record<Tier, string> = {
 export function taskTier(task: Task): Tier {
   const state = task.runtime.state;
   if (state === 'recording' || state === 'reconnecting' || state === 'finalizing') return 'recording';
-  if (state === 'error' || state === 'needs_auth' || state === 'needs_dep' || state === 'unsupported' || state === 'blocked') {
+  if (
+    state === 'error' ||
+    state === 'network' ||
+    state === 'needs_auth' ||
+    state === 'needs_dep' ||
+    state === 'unsupported' ||
+    state === 'blocked'
+  ) {
     return 'attention';
   }
   if (!task.monitorEnabled || state === 'idle' || state === 'paused') return 'paused';
@@ -324,7 +332,11 @@ export function TaskRow({
   const waitingLike =
     task.monitorEnabled &&
     !recording &&
-    (runtime.state === 'waiting' || runtime.state === 'snoozed' || runtime.state === 'blocked' || runtime.state === 'error');
+    (runtime.state === 'waiting' ||
+      runtime.state === 'snoozed' ||
+      runtime.state === 'blocked' ||
+      runtime.state === 'network' ||
+      runtime.state === 'error');
   const [overdueTries, setOverdueTries] = useState(0);
   useEffect(() => {
     setOverdueTries(0);

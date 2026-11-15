@@ -28,6 +28,8 @@ export const PROCESS_EVENT_KINDS = [
   'recording.error_class',
   'plugin.not_live',
   'plugin.resolve_err',
+  /** 连不上平台：断网期间每恢复一轮都会重现，属于心跳而不是证据 */
+  'plugin.network_err',
 ] as const;
 
 const PROCESS_SET: ReadonlySet<string> = new Set<string>(PROCESS_EVENT_KINDS);

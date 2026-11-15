@@ -233,20 +233,28 @@ def _bili_quality_options(playurl: dict | None) -> list[str]:
     return [BILI_QN_NAMES.get(qn, str(qn)) for qn in sorted(qns, reverse=True)]
 
 
-async def _bilibili_pick_stream(ls: Any, url: str, quality: Any) -> dict | None:
-    """B站专用取流：走**新接口** `getRoomPlayInfo`，返回选出的一条线路 + 实际可用档位，或 None。
+async def _bilibili_room(ls: Any, url: str, quality: Any) -> dict:
+    """B站新接口 `getRoomPlayInfo` 一次请求，回答两件事：**在不在播**、**能录哪条流**。
+
+    `{"live": bool, "stream": {"url", "qn", "codec", "format", "options"} | None}`
 
     为什么不用 streamget 内置的 `get_bilibili_stream_data`：它**先试老接口**
     `room/v1/Room/playUrl`，只要 `code == 0` 就直接返回 —— 而**未登录时老接口会静默降级**。
     2026-10-07 实测：房间 6 请求 qn=10000（原画）只回 150（高清）→ 854×480；同一房间走
     新接口是 1920×1080。降级既不改 `code` 也不报错，用户只会觉得"B站录出来怎么这么糊"。
 
+    为什么"在不在播"也要问它：老接口那条路 `fetch_web_stream_data` 会把异常**吞掉**返回
+    `{}`，于是 `is_live=False` —— 断网、被风控、平台改版，全都长得像"主播没开播"。
+    2026-11-15 实测：proxy 指向死端口（等价断网），卡片显示"主播未开播"，真相是网线掉了，
+    正在录的场次还会被当成下播收尾。`live_status` 是**平台自己给的结论**，网络断了这一句
+    会直接抛（→ `classify_exception` → NETWORK → 卡片"网络异常"），不会伪装成没开播。
+
     选择规则：**先卡画质档位**（≤ 目标 qn 里取最大），再在同档位内偏好 `flv` 与 `avc`。
     画质优先于编码兼容 —— 房间 6 的原画只有 HEVC 线路，若坚持 AVC 就只能录到 250（超清）；
     而 HEVC 的 MP4 现代播放器都能放，低画质则是不可逆的损失。
     """
     target = _bili_target_qn(quality)
-    room_id = url.split("?")[0].rsplit("/", maxsplit=1)[1]
+    room_id = url.split("?")[0].rstrip("/").rsplit("/", maxsplit=1)[-1]
     params = {
         "room_id": room_id, "protocol": "0,1", "format": "0,1,2", "codec": "0,1,2",
         "qn": str(target), "platform": "web", "ptype": "8",
@@ -255,9 +263,28 @@ async def _bilibili_pick_stream(ls: Any, url: str, quality: Any) -> dict | None:
     api = ("https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?"
            + urllib.parse.urlencode(params))
     data = json.loads(await async_req(api, proxy_addr=ls.proxy_addr, headers=ls.pc_headers))
-    playurl = ((data.get("data") or {}).get("playurl_info") or {}).get("playurl")
-    if data.get("code") != 0 or not playurl:
-        return None
+
+    code = data.get("code")
+    if code != 0:
+        # 平台**没给结论**：-352/-412 是风控（等一会儿再来），60004 是房间不存在
+        # （地址写错了，重试没有意义）。绝不能当作"没开播"——那正是本次要修的病根。
+        detail = data.get("message") or ""
+        if code == 60004:
+            raise PluginError("UNSUPPORTED_URL", f"B站说这个房间不存在（code=60004）：{url}")
+        if code in (-352, -412):
+            raise PluginError("RATE_LIMITED", f"B站风控中（code={code} {detail}）", True, 60)
+        raise PluginError("PLATFORM_CHANGED", f"B站接口异常（code={code} {detail}）".strip())
+
+    payload = data.get("data") or {}
+    if payload.get("live_status") != 1:
+        # 房间存在但没开播：这是**平台明确说的**，可以放心回"未开播"。
+        return {"live": False, "stream": None}
+    playurl = (payload.get("playurl_info") or {}).get("playurl")
+    if not playurl:
+        # 说在播却没给 playurl：结论是"在播"，只是这一轮没拿到地址。
+        # 回 live=True + stream=None，宿主会按"在播但没拿到流地址"5 秒快速重试，
+        # 而不是把正在播的场次记成"未开播"。
+        return {"live": True, "stream": None}
 
     best: tuple | None = None
     for stream in playurl.get("stream") or []:
@@ -276,12 +303,15 @@ async def _bilibili_pick_stream(ls: Any, url: str, quality: Any) -> dict | None:
                     best = (key, info["host"] + codec["base_url"] + info["extra"],
                             qn, codec.get("codec_name"), fmt.get("format_name"))
     if best is None:
-        return None
+        return {"live": True, "stream": None}
     return {
-        "url": best[1], "qn": best[2], "codec": best[3], "format": best[4],
-        # 下拉要的是"这个房间到底有哪些档"，与"我这次选了哪条"是两件事：
-        # 房间 6 实测 = 原画(仅 hevc) + 超清；没有 400/150 —— 给不出就别假装有。
-        "options": _bili_quality_options(playurl),
+        "live": True,
+        "stream": {
+            "url": best[1], "qn": best[2], "codec": best[3], "format": best[4],
+            # 下拉要的是"这个房间到底有哪些档"，与"我这次选了哪条"是两件事：
+            # 房间 6 实测 = 原画(仅 hevc) + 超清；没有 400/150 —— 给不出就别假装有。
+            "options": _bili_quality_options(playurl),
+        },
     }
 
 
@@ -360,6 +390,9 @@ def resolve(req: dict) -> dict:
 
     loop = asyncio.new_event_loop()
     bili = None
+    # B站：平台自己给的在播结论（`live_status`）。None = 没问过/非 B站（"不知道"），
+    # 与 False（"平台说没播"）必须分开——前者要继续走原有判定，后者直接下结论。
+    live: bool | None = None
     try:
         json_data = loop.run_until_complete(fetch())
         sd = loop.run_until_complete(
@@ -368,19 +401,25 @@ def resolve(req: dict) -> dict:
             ls.fetch_stream_url(json_data, _streamget_quality(req.get("quality")))
         )
         # B站：上面这一步走的是 streamget 老接口，**未登录会静默降级**（见
-        # `_bilibili_pick_stream` 的注释）。这里用新接口重取一次覆盖掉它。
-        # 失败/取不到就**保留**老接口结果 —— 宁可画质低，也不能录不了。
-        if platform == "bilibili" and sd.is_live:
+        # `_bilibili_room` 的注释），而且它会把异常吞成"未开播"。所以再用新接口
+        # 问一次，一次拿两样东西：平台说的在播状态 + 高质量的流。
+        if platform == "bilibili":
             try:
-                bili = loop.run_until_complete(
-                    _bilibili_pick_stream(ls, url, req.get("quality"))
-                )
-            except Exception as e:  # 增强路径，任何失败都不该连带本次解析一起失败
+                room = loop.run_until_complete(_bilibili_room(ls, url, req.get("quality")))
+            except Exception as e:
+                if not sd.is_live:
+                    # 老接口也没说在播 → 这条异常就是**唯一的结论**，如实报出去
+                    # （断网 → NETWORK，风控 → RATE_LIMITED）。以前正是在这里
+                    # 把"连不上"吞成了"主播没开播"。
+                    raise
+                # 老接口已经拿到流：宁可画质低也先录上，别为一次增强查询丢掉整场
                 print(f"[bilibili] 新接口取流失败，回退老接口结果: {e}", file=sys.stderr)
+            else:
+                live, bili = room["live"], room["stream"]
     finally:
         loop.close()
 
-    if not sd.is_live:
+    if live is False or (live is None and not sd.is_live):
         return {
             "id": req.get("id"), "ok": True, "platform": platform,
             "anchor_name": sd.anchor_name, "title": None, "is_live": False,
@@ -558,7 +597,7 @@ def _pick_vod_video(
 ) -> tuple[dict | None, list[str], list[tuple[int, str]]]:
     """在 `dash.video` 里挑一条：**档位优先**，同档优先 avc（兼容性），剔除 av1。
 
-    与直播 `_bilibili_pick_stream` 同一条取向后半句的理由：av1 在 ffmpeg copy 下
+    与直播 `_bilibili_room` 同一条取向后半句的理由：av1 在 ffmpeg copy 下
     不保证可用（直播那次是视频轨退化成 bin_data、rc 仍为 0）。点播能避开就避开。
     """
     options: list[tuple[int, str]] = []

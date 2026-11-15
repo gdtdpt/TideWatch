@@ -279,6 +279,8 @@ cd plugins/streamget-plugin && PYTHONPATH="$PWD/site-packages:$PWD" python3 -m u
 
 | 现象 | 多半是 | 动作 |
 |---|---|---|
+| 所有任务同时变「网络异常」 | 本机断网 / 代理不可用（不是任务或插件的问题） | 换个终端 `curl -sS -o /dev/null -w '%{http_code}\n' 'https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=6&platform=web&ptype=8'`；有代理时看 `HTTP_PROXY` 指向的代理是否还活着。恢复后任务自己回到 `等待开播` |
+| 单个任务「网络异常」、别的正常 | 该平台的域名被墙 / 该平台挂了 | 同上 curl 换成对应平台域名；事件表里 `plugin.network_err` 带平台原文 |
 | 任务卡在 `needs_dep` | ffmpeg 找不到 | 看 `GET /api/health` 的 `binaries.ffmpeg`；跑 `pnpm fetch:ffmpeg` 或设 `TIDEWATCH_FFMPEG` |
 | 一直 `reconnecting`，detail `stream_eof` | 证书或缺请求头 | 先手工验证：`./vendor/ffmpeg/bin/ffmpeg -v error -t 5 -i <url> -f null -`；`certificate verify failed` → 设 `SSL_CERT_FILE=/etc/ssl/cert.pem` |
 | 页面能开但接口 401 | token 来自另一个数据根 | `cat <你启动时用的 data-root>/auth-token.txt` |

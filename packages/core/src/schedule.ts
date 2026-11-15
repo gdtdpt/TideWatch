@@ -24,6 +24,13 @@ export const POLL_WARM_MIN_MS = 60_000;
 export const POLL_COLD_MS = 180_000;
 /** 任何理由的间隔上限：再冷也不超过 10 分钟，避免错过整场 */
 export const POLL_CAP_MS = 600_000;
+/**
+ * 断网这类"请求发不出去"的失败，退避上限只给 2 分钟。
+ *
+ * 没有请求能出去时多问几次不花钱，但**恢复要快**：断网 20 分钟、网一回来却还要
+ * 再等 10 分钟才去解析，等于把主播刚开播那几分钟丢掉了。
+ */
+export const NETWORK_BACKOFF_CAP_MS = 120_000;
 /** 连续未开播多少轮翻一倍间隔 */
 export const IDLE_STRETCH_ROUNDS = 10;
 /** 历史样本少于这个数时不做冷热判断（新任务照常 30s，别一上来就 3 分钟） */
@@ -174,6 +181,13 @@ export interface PollInput {
   errorStreak: number;
   /** 基准间隔 = 设置里的轮询间隔 */
   baseMs: number;
+  /**
+   * 这串失败是什么性质：默认 `other`（平台改版、限流…）。
+   *
+   * `network` = 请求根本没出去（本机断网 / 代理挂了）。多问几次没有任何代价
+   * （发不出去），但网一回来必须尽快发现，所以退避上限压到 2 分钟。
+   */
+  errorKind?: 'network' | 'other';
 }
 
 export function planPoll(input: PollInput): PollPlan {
@@ -193,10 +207,13 @@ export function planPoll(input: PollInput): PollPlan {
   let reason: PollReason;
 
   if (input.errorStreak >= 2) {
-    // 连续失败：2 次起翻倍，封顶 10 分钟。风控期间继续猛问只会被拉黑更久。
+    // 连续失败：2 次起翻倍。风控期间继续猛问只会被拉黑更久，所以封顶 10 分钟；
+    // 但"请求根本发不出去"（断网）没有这个顾虑 —— 封顶压到 2 分钟，
+    // 否则网恢复之后还要再睡 10 分钟，正好把开播的前几分钟睡掉。
+    const network = input.errorKind === 'network';
     const exp = Math.min(input.errorStreak - 1, 6);
-    delay = base * 2 ** exp;
-    reason = 'error_backoff';
+    delay = Math.min(base * 2 ** exp, network ? NETWORK_BACKOFF_CAP_MS : POLL_CAP_MS);
+    reason = network ? 'network_backoff' : 'error_backoff';
   } else {
     const level = affinityLevel(input.affinity, input.now.getHours());
     if (level === 'hot') {
@@ -236,6 +253,8 @@ export function describeReason(reason: PollReason, delayMs: number): string {
       return '不在监控时段';
     case 'error_backoff':
       return `解析失败，${String(s)} 秒后重试`;
+    case 'network_backoff':
+      return `网络不通，${String(s)} 秒后再试`;
     case 'cold':
       return `该时段平时不开播，${String(s)} 秒后再看`;
     case 'warm':

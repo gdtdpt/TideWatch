@@ -492,7 +492,11 @@ describe('画质可见性与流参数漂移', () => {
 });
 
 describe('监控时段与轮询节奏', () => {
-  const fail = (code: 'NOT_LIVE' | 'RESTRICTED', message: string, retryAfterS?: number): ResolveOutcome => ({
+  const fail = (
+    code: 'NOT_LIVE' | 'RESTRICTED' | 'NETWORK' | 'PLATFORM_CHANGED',
+    message: string,
+    retryAfterS?: number,
+  ): ResolveOutcome => ({
     ok: false,
     error: { code, message, retryable: true, ...(retryAfterS === undefined ? {} : { retryAfterS }) },
   });
@@ -547,6 +551,41 @@ describe('监控时段与轮询节奏', () => {
     expect(kinds).not.toContain('plugin.resolve_err');
     expect(kinds).not.toContain('task.state_changed_error');
     expect(h.store.getRuntime(taskId)?.detail).toBe('主播未开播');
+  });
+
+  // 2026-11-14 真机：家里网络断了，十张任务卡全变成"解析错误"，第一反应是程序坏了。
+  // 实际要动的是网线/代理，且网络一恢复所有任务会同时自愈 —— 状态必须说清这件事。
+  it('本机断网（NETWORK）→ network 状态 + 人话提示，原始异常只进事件表', async () => {
+    const { h, engine, drafts, taskId } = setup();
+    h.store.putSettings({ pollIntervalS: 5 });
+    h.resolver.queue = [
+      fail('NETWORK', '平台返回空或畸形响应: Expecting value: line 1 column 2 (char 1)'),
+    ];
+
+    engine.start();
+    await waitFor(() => h.store.getRuntime(taskId)?.state === 'network', '进入网络异常');
+
+    // 卡片上要写"该去动什么"，不能把 Python 的 JSON 异常糊上去
+    expect(h.store.getRuntime(taskId)?.detail).toBe('连不上平台，检查本机网络或代理');
+    const ev = h.store.listEvents({ limit: 50 }).find((e) => e.kind === 'plugin.network_err');
+    expect(JSON.stringify(ev?.payload)).toContain('Expecting value');
+    // 断网不值得半夜推送：恢复是自动的，推了也只能干看着
+    expect(drafts).toHaveLength(0);
+  });
+
+  it('断网期间的退避理由报 network_backoff（不是"解析失败"）', async () => {
+    const { h, engine, taskId } = setup();
+    h.store.putSettings({ pollIntervalS: 5 });
+    h.resolver.queue = [fail('NETWORK', '网络错误: ConnectError: [Errno 8] nodename nor servname provided')];
+
+    engine.start();
+    await waitFor(() => engine.nextPollOf(taskId)?.reason === 'network_backoff', '退避理由是网络', 20_000);
+
+    const next = engine.nextPollOf(taskId);
+    const left = (next?.at ?? 0) - Date.now();
+    // 连问两轮后才进退避：5s × 2 = 10s，远低于 10 分钟的老上限
+    expect(left).toBeLessThanOrEqual(20_000);
+    expect(h.store.getRuntime(taskId)?.state).toBe('network');
   });
 
   it('平台拒绝进房（RESTRICTED）→ blocked 状态 + 一条通知', async () => {

@@ -93,9 +93,22 @@ describe('插件错误 → 状态与处置', () => {
     expect(resolveFault('PLATFORM_UNSUPPORTED')).toMatchObject({ kind: 'unsupported', state: 'unsupported' });
   });
 
-  it('限流/平台改版/网络 都属于"等一会儿再来"，不换状态', () => {
-    for (const code of ['RATE_LIMITED', 'PLATFORM_CHANGED', 'NETWORK', 'TIMEOUT'] as const) {
+  it('限流/平台改版属于"等一会儿再来"，仍归到 error', () => {
+    for (const code of ['RATE_LIMITED', 'PLATFORM_CHANGED'] as const) {
       expect(resolveFault(code)).toMatchObject({ kind: 'other', state: 'error' });
+    }
+  });
+
+  // 本机断网时所有任务会同时失败（2026-11-14 真机：十张卡全显示"解析错误"，
+  // 第一反应是程序坏了）。网络故障单独一个状态，界面才敢说"网络异常"。
+  it('连不上平台（NETWORK / TIMEOUT）单独归为 network，不是"任务出错"', () => {
+    for (const code of ['NETWORK', 'TIMEOUT'] as const) {
+      expect(resolveFault(code)).toMatchObject({
+        kind: 'network',
+        state: 'network',
+        eventKind: 'plugin.network_err',
+        needsAction: false,
+      });
     }
   });
 

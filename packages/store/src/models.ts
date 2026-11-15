@@ -43,7 +43,15 @@ export type RuntimeState =
   /** 不在监控时段：一次请求都不发，等到点自动恢复 */
   | 'paused'
   /** 平台拒绝进房（主播设了观看范围 / 付费直播），半小时后再试 */
-  | 'blocked';
+  | 'blocked'
+  /**
+   * 连不上平台（本机断网 / 代理挂了 / 平台返回空响应）。
+   *
+   * 与 `error` 分开的理由：用户看到的"出错"会以为**任务**坏了，去翻配置、换画质、
+   * 重加任务 —— 而实际要动的是网线或代理，且它一恢复所有任务会同时自愈
+   * （2026-11-14 真机：本机断网，十个任务卡全显示"解析错误"，第一反应是程序坏了）。
+   */
+  | 'network';
 
 /**
  * 「实际拿到的画质」——与 `Task.quality`（**请求**的档位）是两件事。
@@ -80,7 +88,15 @@ export interface MonitorWindow {
   days?: number[];
 }
 
-export type PollReason = 'window_closed' | 'hot' | 'warm' | 'cold' | 'idle_stretch' | 'error_backoff';
+export type PollReason =
+  | 'window_closed'
+  | 'hot'
+  | 'warm'
+  | 'cold'
+  | 'idle_stretch'
+  | 'error_backoff'
+  /** 连不上平台（本机断网等）：退避上限比 `error_backoff` 短得多，网一回来要立刻恢复 */
+  | 'network_backoff';
 
 /** 下一次轮询该等多久、为什么 */
 export interface PollPlan {

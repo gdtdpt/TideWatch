@@ -7,15 +7,15 @@
 > 断流两层重连、cap 切点落段边界、重合并不毁产物、恢复扫描的孤儿判定，
 > 这些行为在文档里是"一句话"，在代码里是一堆时序细节，只能靠测试钉住。
 >
-> 状态：**2026-11-04，M1–M5 + 画质可见 + 跨会话合并 + 监控时段 + 事件保留 + 轮询倒计时全部自动化项已落地并通过（211 条）**。
+> 状态：**2026-11-04，M1–M5 + 画质可见 + 跨会话合并 + 监控时段 + 事件保留 + 轮询倒计时 + 网络故障分流全部自动化项已落地并通过（215 条）**。
 > 真机项（需要真实平台/设备）列在 §7，未打勾的属于交付前必须补的一次性验收。
 
 运行方式：
 
 ```bash
-pnpm test                 # 全部（vitest，22 个文件 / 211 条）
+pnpm test                 # 全部（vitest，22 个文件 / 215 条）
 pnpm lint && pnpm typecheck
-cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest discover -s tests -v   # 48 条
+cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest discover -s tests -v   # 53 条
 ```
 
 ---
@@ -66,6 +66,8 @@ cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest disc
 | — | 改时段要 2 秒内重算，不能等原来那个 11 小时的长等待 | `core/engine.ts` `#waitPoll`（窗口快照比较）＋ 人工：窗外改窗口，看状态是否立刻变 |
 | — | 抖音下播是**抛异常**不是返回空：按 `waiting` 处理，不记 `error` | `core/engine.test.ts` › 主播没开播按等待处理 ＋ `plugins/…/test_adapters.py` › ended_live |
 | — | 主播设了观看范围 → `RESTRICTED` + `blocked` 状态 + 半小时退避（别持续撞门） | `core/engine.test.ts` › 平台拒绝进房 ＋ `plugins/…/test_adapters.py` › visibility_restriction |
+| — | 本机断网时**所有任务会同时失败**：报「网络异常」而不是「解析错误」，卡片上写"检查本机网络或代理"，原始 Python 异常只进事件表；断网退避封顶 2 分钟（恢复要快），且不推送 | `core/classify.test.ts` › 连不上平台单独归为 network；`core/engine.test.ts` › 本机断网 / 断网期间的退避理由；`core/schedule.test.ts` › 断网退避封顶 2 分钟 |
+| — | B站「在不在播」由平台接口给结论：`fetch_web_stream_data` 会把异常吞成 `{}` → `is_live=False`，断网就被记成"主播未开播"。平台说 `live_status=0` 才算没播；风控 `code≠0` 报限流而不是没播；老接口已拿到流时增强查询失败不连坐 | `plugins/…/test_adapters.py` › BilibiliLivenessTest（4 条，含断网不吞成未开播） |
 | — | 风控与下播同时出现时**风控优先**（60s 退避 ≠ 当成正常下播） | `plugins/…/test_adapters.py` › risk_control_wins |
 | — | 时段净化规则前后端同一套：跨午夜、最多 3 段、脏段 400（不能静默存成"永不监控"） | `server/api.test.ts` › 监控时段 |
 | — | 等待期间界面要能看出"在按节奏等"：卡片显示「下一轮 x 秒后再看 · 为什么这么久」。10 分钟的空档如果什么都不显示，和"卡死了"长得一模一样 | `core/engine.test.ts` › 窗外等待时能报出恢复时刻 / 窗内未开播按基准间隔排下一轮 / 引擎停下后不再报下一轮 |
