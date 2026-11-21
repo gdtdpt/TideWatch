@@ -97,7 +97,7 @@ export function mergeSkipped(input: {
  * 跨会话合并（用户手动把几场拼成一个视频）：完成与失败各一条。
  *
  * 缺口单独提一句 —— 拼接把时间空洞"抹平"了，文件看起来是连续的，
- * 用户不提前知道就会以为录像正常（老猫鱼那场就是中途被关播造成的）。
+ * 用户不提前知道就会以为录像正常（那场就是中途被关播造成的）。
  */
 export function sessionsMerged(input: {
   sessions: number;
@@ -221,7 +221,7 @@ export function describeLayout(layout: string | null): string | null {
  * 段与段之间流参数变了（分辨率 / 编码 / 像素格式任一不同）。
  *
  * 这件事本身不影响录制，但会让"合并成一个文件"变复杂（不同 layout 的 TS 直接
- * concat 会在拼接点崩）。2026-11-01 老猫鱼那场就是三段里第一段流序与后两段不同，
+ * concat 会在拼接点崩）。2026-11-01 那场就是三段里第一段流序与后两段不同，
  * 排查花了不少时间 —— 提前说一句，比事后翻 ffmpeg 日志省事。
  */
 export function layoutChanged(input: {

@@ -690,7 +690,7 @@ export class Engine {
 
       // 上一轮连接可能留下没封口的残段（ffmpeg 被杀/崩时 csv 里没有它，文件却在盘上）。
       // 不接管就直接从同一个 part 号重开，`-segment_start_number` 会把那个文件截断覆盖
-      // —— 2026-11-01 老猫鱼那场这样白丢了 70MB（约 8 分钟）。
+      // —— 2026-11-01 那场这样白丢了 70MB（约 8 分钟）。
       const adopted = await this.#adoptDanglingParts(sessionId, outputDir, nextPartNo, task.id);
       nextPartNo = adopted.nextPartNo;
       if (adopted.salvagedS > 0 && lastConnEndMono !== null) {

@@ -149,7 +149,7 @@ export function concatArgs(spec: ConcatSpec): string[] {
  * `-map 0` 保留输入原始顺序，重封装后仍是音频在前，与后续段对不上；
  * concat 按流序号配对，到段边界就把音频包塞进视频流 →
  * `Error muxing a packet` / `AVERROR_INVALIDDATA`，整场录制白录。
- * 实测（2026-11-01 老猫鱼那场）：`-map 0` 拼 2 小时必崩在 3600s，
+ * 实测（2026-11-01 那场）：`-map 0` 拼 2 小时必崩在 3600s，
  * 改成 video-first 后 2:08:16 一次过。`?` 让无音轨的段不至于直接失败。
  */
 export function remuxArgs(input: string, output: string): string[] {

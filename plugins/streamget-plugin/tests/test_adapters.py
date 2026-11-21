@@ -493,7 +493,7 @@ class BilibiliLivenessTest(unittest.TestCase):
             async def fetch_stream_url(self, json_data, quality):
                 return SimpleNamespace(
                     is_live=streamget_live,
-                    anchor_name="老猫鱼不吃鱼" if streamget_live else None,
+                    anchor_name="测试主播" if streamget_live else None,
                     title="直播中" if streamget_live else None,
                     flv_url=streamget_url,
                     m3u8_url=None,
