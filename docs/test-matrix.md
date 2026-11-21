@@ -7,13 +7,13 @@
 > 断流两层重连、cap 切点落段边界、重合并不毁产物、恢复扫描的孤儿判定，
 > 这些行为在文档里是"一句话"，在代码里是一堆时序细节，只能靠测试钉住。
 >
-> 状态：**2026-11-04，M1–M5 + 画质可见 + 跨会话合并 + 监控时段 + 事件保留 + 轮询倒计时 + 网络故障分流全部自动化项已落地并通过（215 条）**。
+> 状态：**2026-11-21，M1–M5 + 画质可见 + 跨会话合并 + 监控时段 + 事件保留 + 轮询倒计时 + 网络故障分流 + 画质建议全部自动化项已落地并通过（229 条）**。
 > 真机项（需要真实平台/设备）列在 §7，未打勾的属于交付前必须补的一次性验收。
 
 运行方式：
 
 ```bash
-pnpm test                 # 全部（vitest，22 个文件 / 215 条）
+pnpm test                 # 全部（vitest，23 个文件 / 229 条）
 pnpm lint && pnpm typecheck
 cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest discover -s tests -v   # 53 条
 ```
@@ -140,6 +140,7 @@ cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest disc
 | — | 渠道失败/抛异常只记账，不影响其他渠道与录制 | `notify/dispatcher.test.ts` |
 | — | 诊断包落 `exports/` 并返回路径（无壳形态没有保存对话框） | `server/api.test.ts` › 诊断包（曾因 SQL 双引号 500，已修） |
 | — | `/api/videos` 只放行录制目录内（防目录穿越） | `server/api.test.ts` › 403 |
+| — | **画质建议**：按时长加权算历史稳定档位（不看段数），并把「只出现在每场开头」的档位单独点名 —— 平台开播初期给高档才是前后不一致的根因 | `core/qualityAdvice.test.ts`（10 条）+ `server/api.test.ts` › 画质建议（404 / 空数据不编推荐值 / 稳定档位与 aligned / 空串等价未固定） |
 | — | 优雅退出只有一条管道：HTTP 控制端点与 SIGTERM/SIGINT 同路 | `packages/server/src/cli.ts` 单一 `shutdown()`（人工：`curl -X POST /api/shutdown` 后进程退出、端口释放） |
 
 ## 5. M5 UI
@@ -153,6 +154,7 @@ cd plugins/streamget-plugin && PYTHONPATH=site-packages python3 -m unittest disc
 | — | 录制页兼合并工作台：勾选多场 → 底部操作条；进行中的场次勾不上；会话详情「加入合并」跳过来自动预选 | `pages/Recordings.tsx`（`preselect` 路由）、`pages/SessionDetail.tsx` |
 | — | 合并页：进度条 + 产物播放器 + **缺口卡片**（哪两场之间、空多久）+ 源会话可点回 | `pages/MergeDetail.tsx`；缺口文案 = `merge.gaps`（后端算，前端不反推） |
 | — | 平台可辨识：任务卡 / 录制列表 / 会话详情头部显示平台标识（bilibili 粉、douyin 黑、direct 灰），未知平台给灰问号而非猜测 | `platformMarks.tsx`（内联 SVG 字形，无位图资源）；会话列表的 `platform` 由 `/api/sessions` 带出，旧进程缺字段时按 `taskId` 回查任务 |
+| — | 任务设置里显示「历史稳定档位（x% 时长）」，未对齐时转琥珀色；取不到建议时静默不显示，绝不挡住编辑 | `taskViews.tsx` › EditTaskModal（`GET /api/tasks/:id/quality-advice`）；人工：390px 视口不横向滚动、三行提示不重叠 |
 
 > 已知产品行为（不是缺陷）：`sessions.task_id` 是 `ON DELETE CASCADE`，
 > 删除任务会连带删掉会话/分段/产物**索引**，磁盘文件保留。

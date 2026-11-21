@@ -289,6 +289,43 @@ export interface Settings {
   outputDir: string;
 }
 
+/**
+ * 档位建议：从历史分段反推「这个直播间稳定在哪个画质」。
+ *
+ * 服务端 `GET /api/tasks/:id/quality-advice`。注意它给的是**流参数**（1280×720 Main），
+ * 不是画质词（原画/超清）——历史分段只记了分辨率，没记 qn，所以不能一键回填。
+ */
+export interface QualityAdviceGroup {
+  layoutHash: string | null;
+  label: string;
+  height: number | null;
+  profile: string | null;
+  durationS: number;
+  /** 0..1，按时长占比 */
+  share: number;
+  segmentCount: number;
+  sessionCount: number;
+  /** 只出现在每场开头 → 开播初期的瞬时档位 */
+  onlyAtStart: boolean;
+}
+
+export interface QualityAdvice {
+  sessions: number;
+  segments: number;
+  totalDurationS: number;
+  groups: QualityAdviceGroup[];
+  recommendation: {
+    layoutHash: string | null;
+    label: string;
+    height: number | null;
+    share: number;
+    stable: boolean;
+  } | null;
+  currentHeight: number | null;
+  aligned: boolean;
+  notes: string[];
+}
+
 export interface PluginInfo {
   name: string;
   version: string;

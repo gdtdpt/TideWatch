@@ -638,3 +638,129 @@ describe('事件归档与保留', () => {
     expect(after.body.archive.bytes).toBeGreaterThan(0);
   });
 });
+
+/**
+ * 画质建议（`GET /api/tasks/:id/quality-advice`）。
+ *
+ * 算法本身在 `core/qualityAdvice.test.ts` 里测透了；这里只钉住契约：
+ * 404、空数据不编推荐值、任务上设的画质要原样带出来。
+ */
+describe('画质建议', () => {
+  interface SeedPart {
+    partNo: number;
+    durationS: number;
+    height: number;
+    profile: string;
+  }
+
+  function seed(
+    c: Ctx,
+    opts: { parts: SeedPart[]; startedAt: string; quality?: string | null },
+  ): string {
+    const task = c.service.store.addTask({
+      url: `https://live.bilibili.com/${String(Date.now())}${String(Math.random())}`,
+      platform: 'bilibili',
+      streamerName: '画质测试',
+      ...(opts.quality === undefined ? {} : { quality: opts.quality }),
+    });
+    const sessionId = c.service.store.createSession({
+      taskId: task.id,
+      startedAt: opts.startedAt,
+      outputDir: join(c.dataRoot, 'downloads', '画质测试'),
+      origin: 'new',
+    });
+    for (const p of opts.parts) {
+      const size = p.height === 1080 ? '1920x1080' : '1280x720';
+      c.service.store.insertSegment({
+        sessionId,
+        path: join(c.dataRoot, 'downloads', '画质测试', `part${String(p.partNo)}.ts`),
+        partNo: p.partNo,
+        startedAt: opts.startedAt,
+        durationS: p.durationS,
+        sizeBytes: 1024,
+        integrity: 'ok',
+        video: {
+          codec: 'h264',
+          profile: p.profile,
+          width: p.height === 1080 ? 1920 : 1280,
+          height: p.height,
+          pixFmt: 'yuv420p',
+          layoutHash: `h264-${size}-yuv420p+aac-48000-2`,
+        },
+        audio: { codec: 'aac', sampleRate: 48000, channels: 2 },
+      });
+    }
+    c.service.store.endSession(sessionId, 'offline', opts.startedAt);
+    return task.id;
+  }
+
+  it('任务不存在返回 404', async () => {
+    const c = await makeApp();
+    expect((await c.get('/api/tasks/not-exist/quality-advice')).statusCode).toBe(404);
+  });
+
+  it('没有分段时不编推荐值，明确说"先录一场"', async () => {
+    const c = await makeApp();
+    const task = c.service.store.addTask({
+      url: 'https://live.bilibili.com/1001',
+      platform: 'bilibili',
+      streamerName: '空数据主播',
+    });
+    const res = await c.get<{ taskId: string; advice: { recommendation: unknown; notes: string[] } }>(
+      `/api/tasks/${task.id}/quality-advice`,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.body.taskId).toBe(task.id);
+    expect(res.body.advice.recommendation).toBeNull();
+    expect(res.body.advice.notes[0]).toContain('先录一场');
+  });
+
+  it('按历史时长给出稳定档位，并把任务上设的画质带出来', async () => {
+    const c = await makeApp();
+    const id = seed(c, {
+      startedAt: '2026-11-20T20:00:00.000Z',
+      quality: '超清',
+      parts: [
+        { partNo: 1, durationS: 600, height: 1080, profile: 'High' },
+        { partNo: 2, durationS: 3600, height: 720, profile: 'Main' },
+        { partNo: 3, durationS: 3600, height: 720, profile: 'Main' },
+      ],
+    });
+
+    const res = await c.get<{
+      streamerName: string;
+      advice: {
+        sessions: number;
+        totalDurationS: number;
+        recommendation: { height: number | null; label: string; share: number; stable: boolean } | null;
+        aligned: boolean;
+        groups: { label: string; onlyAtStart: boolean }[];
+      };
+    }>(`/api/tasks/${id}/quality-advice`);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.streamerName).toBe('画质测试');
+    expect(res.body.advice.recommendation).toMatchObject({
+      height: 720,
+      label: '1280×720 Main',
+      stable: true,
+    });
+    expect(res.body.advice.recommendation?.share).toBeCloseTo(7200 / 7800, 5);
+    expect(res.body.advice.aligned).toBe(true);
+    const hd = res.body.advice.groups.find((g) => g.label === '1920×1080 High');
+    expect(hd?.onlyAtStart).toBe(true);
+  });
+
+  it('空字符串画质等价于"未固定"，任务里存的是 null', async () => {
+    const c = await makeApp();
+    const id = seed(c, {
+      startedAt: '2026-11-20T20:00:00.000Z',
+      parts: [{ partNo: 1, durationS: 600, height: 720, profile: 'Main' }],
+      quality: '',
+    });
+    const res = await c.get<{ advice: { aligned: boolean; notes: string[] } }>(
+      `/api/tasks/${id}/quality-advice`,
+    );
+    expect(res.body.advice.notes.some((n) => n.includes('房间此刻能给的最高档'))).toBe(true);
+  });
+});

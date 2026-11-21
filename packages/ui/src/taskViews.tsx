@@ -11,6 +11,7 @@ import {
   fmtTime,
   STATE_LABEL,
   type MonitorWindow,
+  type QualityAdvice,
   type Task,
 } from './api.ts';
 import { Badge, Button, Card, ErrorText, Field, Input, Modal, Select, Toggle } from './components.tsx';
@@ -499,6 +500,26 @@ export function TaskEditor({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /**
+   * 档位建议：只读、失败不打扰（取不到就当没有）。
+   *
+   * 它让「该不该固定画质」有据可依：平台常在开播初期给高档、转码就绪后收回，
+   * 不钉在历史稳定档位上，一场直播就会被拆成 `_1080p` / `_720p` 两个文件。
+   */
+  const [advice, setAdvice] = useState<QualityAdvice | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .get<{ advice: QualityAdvice }>(`/api/tasks/${task.id}/quality-advice`)
+      .then((r) => {
+        if (alive) setAdvice(r.advice);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [task.id]);
+
   const save = async (): Promise<void> => {
     setBusy(true);
     setError(null);
@@ -560,6 +581,16 @@ export function TaskEditor({
             {task.qualityActual.codec !== null ? ` · ${task.qualityActual.codec.toUpperCase()}` : ''}
             {task.qualityActual.format !== null ? ` · ${task.qualityActual.format}` : ''}
             {task.qualityActual.degraded ? `（低于请求的 ${task.qualityActual.requested ?? '默认'}）` : ''}
+          </p>
+        )}
+        {advice !== null && advice.recommendation !== null && (
+          <p
+            className={`-mt-1 text-[11px] ${advice.aligned ? 'text-neutral-500' : 'text-amber-400'}`}
+            title={advice.notes.join('\n')}
+          >
+            历史稳定档位：{advice.recommendation.label}（{(advice.recommendation.share * 100).toFixed(1)}% 时长）
+            {advice.aligned ? ' · 已对齐' : ' · 与当前设置不一致'}
+            {advice.recommendation.stable ? '' : ' · 该房间本身不稳定'}
           </p>
         )}
         <Field

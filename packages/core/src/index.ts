@@ -9,5 +9,6 @@ export * from './merge.ts';
 export * from './engine.ts';
 export * from './postprocess.ts';
 export * from './sessionMerge.ts';
+export * from './qualityAdvice.ts';
 export * from './recovery.ts';
 export { CORE_NAME } from './constants.ts';

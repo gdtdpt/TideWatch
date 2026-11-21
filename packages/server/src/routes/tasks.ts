@@ -4,7 +4,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import type { MonitorWindow, Task } from '@tidewatch/store';
-import { sanitizeWindows } from '@tidewatch/core';
+import { adviseQuality, sanitizeWindows } from '@tidewatch/core';
 import {
   MAX_MAX_SESSION_BYTES,
   MAX_MAX_SESSION_S,
@@ -42,6 +42,38 @@ export function registerTaskRoutes(app: FastifyInstance, service: TidewatchServi
     if (task === undefined) return reply.code(404).send({ error: 'not-found', message: '任务不存在' });
     return { task: taskView(service, task) };
   });
+
+  /**
+   * 画质建议：从历史分段反推「这个直播间稳定在哪个档位」。
+   *
+   * 只读、零副作用：录制是 `-c copy` 流拷贝，码率不可控，能稳的只有画质档位。
+   * 建议只是建议 —— 改不改由用户决定（`PATCH /api/tasks/:id` 的 quality）。
+   * 起因见 `packages/core/src/qualityAdvice.ts` 的注释（开播初期高档位陷阱）。
+   */
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
+    '/api/tasks/:id/quality-advice',
+    async (req, reply) => {
+      const task = service.store.getTask(req.params.id);
+      if (task === undefined) return reply.code(404).send({ error: 'not-found', message: '任务不存在' });
+
+      const raw = Number(req.query.limit ?? 30);
+      const limit = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), 200) : 30;
+      const sessions = service.store.listSessions({ taskId: task.id, limit });
+      const advice = adviseQuality({
+        sessions: sessions.map((s) => ({
+          id: s.id,
+          startedAt: s.startedAt,
+          segments: service.store.listSegments(s.id),
+        })),
+        requestedQuality: task.quality,
+        actualQuality:
+          task.qualityActual === null
+            ? null
+            : { qn: task.qualityActual.qn, label: task.qualityActual.label },
+      });
+      return { taskId: task.id, streamerName: task.streamerName, advice };
+    },
+  );
 
   app.post<{ Body: Body }>('/api/tasks', async (req, reply) => {
     const url = str(req.body?.['url'])?.trim() ?? '';
